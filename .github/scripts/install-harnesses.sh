@@ -30,6 +30,18 @@ append_path() {
   fi
 }
 
+# The Windows user installers each nest their CLI shim differently, so find it
+# rather than encode a per-vendor layout that only fails once CI runs.
+append_shim_dir() {
+  local shim="$1" root="$2" found
+  found="$(find "$root" -maxdepth 6 -name "$shim" -print -quit 2>/dev/null || true)"
+  if [[ -n "$found" ]]; then
+    append_path "$(dirname "$found")"
+  else
+    echo "warning: no $shim found under $root" >&2
+  fi
+}
+
 need_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
     echo "missing required command: $1" >&2
@@ -43,8 +55,10 @@ apt_install() {
 
 run_inno_installer() {
   local exe="$1"
+  # -PassThru plus an explicit exit is what surfaces a failed install: a bare
+  # Start-Process reports success no matter what the installer did.
   powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \
-    "Start-Process -FilePath '$(cygpath -w "$exe")' -ArgumentList '${INNO_FLAGS}' -Wait"
+    "\$p = Start-Process -FilePath '$(cygpath -w "$exe")' -ArgumentList '${INNO_FLAGS}' -Wait -PassThru; exit \$p.ExitCode"
 }
 
 # Resolve a download URL from Cursor's release API. Cursor publishes no
@@ -174,9 +188,11 @@ case "$OS" in
     append_path "/Applications/Cursor.app/Contents/Resources/app/bin"
     ;;
   Windows)
-    append_path "${LOCALAPPDATA:-}/Programs/Microsoft VS Code/bin"
-    append_path "${LOCALAPPDATA:-}/Programs/cursor/resources/app/bin"
-    append_path "${LOCALAPPDATA:-}/Programs/IBM Bob/bin"
+    programs="$(cygpath -u "${LOCALAPPDATA}")/Programs"
+    echo "installed under $programs:" && ls -1 "$programs" || true
+    append_shim_dir code.cmd "$programs"
+    append_shim_dir cursor.cmd "$programs"
+    append_shim_dir bobide.cmd "$programs"
     ;;
 esac
 
