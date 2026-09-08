@@ -110,11 +110,13 @@ install_cursor() {
 
 # Bob IDE publishes no static download URL. The releases page POSTs these form
 # fields and the endpoint 302s to a presigned object-storage link that expires
-# after 60 seconds, so the artifact has to be fetched in one shot.
+# after 60 seconds, so the artifact has to be fetched in one shot. The method
+# stays implicit: forcing it with -X POST would also apply to the redirect, and
+# the presigned link is signed for GET, which answers 403 to anything else.
 bob_ide_download() {
   local platform="$1" arch="$2" out="$3"
   shift 3
-  "${CURL[@]}" -X POST -L \
+  "${CURL[@]}" \
     --data-urlencode "platform=${platform}" \
     --data-urlencode "architecture=${arch}" \
     --data-urlencode "version=${BOB_IDE_VERSION}" \
