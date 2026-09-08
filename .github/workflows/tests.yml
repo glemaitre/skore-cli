@@ -52,6 +52,9 @@ jobs:
   harness-config:
     name: harness config / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    # Vendor installers that prompt cannot be answered here; cap the job so one
+    # of them cannot sit on a runner until the workflow-level timeout.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -67,7 +70,7 @@ jobs:
           frozen: true
 
       - name: Install harnesses
-        run: bash .github/scripts/install-harnesses.sh
+        run: bash .github/scripts/install-harnesses.sh < /dev/null
 
       - name: Run harness config integration tests
         env:

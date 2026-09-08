@@ -1,8 +1,26 @@
 #!/usr/bin/env bash
-# Install every skore-cli harness using vendor artifacts (not PATH stubs).
+# Install every skore-cli harness using vendor artifacts (never PATH stubs), so
+# `is_harness_installed` is exercised against the command names the vendors
+# really ship. Every step must run without a TTY: the Claude, OpenCode and Pi
+# shell installers prompt for a package manager on /dev/tty, which no runner
+# provides, so the npm packages are used instead.
 set -euo pipefail
 
 OS="${RUNNER_OS:-$(uname -s)}"
+
+# Pinned so a vendor release cannot change what CI tests. Bump deliberately.
+CLAUDE_VERSION="2.1.263"
+OPENCODE_VERSION="1.18.29"
+PI_VERSION="0.85.1"
+CODEX_VERSION="0.153.4"
+VSCODE_VERSION="1.136.1"
+BOB_SHELL_VERSION="2.0.2"
+BOB_IDE_VERSION="1.126.0+bob2.1.0"
+
+CURL=(curl -fsSL --retry 3 --retry-delay 2)
+NPM=(npm install -g --no-fund --no-audit)
+# Inno Setup flags shared by the VS Code and Cursor user installers.
+INNO_FLAGS="/VERYSILENT /NORESTART /MERGETASKS=!runcode"
 
 append_path() {
   local dir="$1"
@@ -13,70 +31,56 @@ append_path() {
 }
 
 need_cmd() {
-  local name="$1"
-  if ! command -v "$name" >/dev/null 2>&1; then
-    echo "missing required command: $name" >&2
+  if ! command -v "$1" >/dev/null 2>&1; then
+    echo "missing required command: $1" >&2
     exit 1
   fi
 }
 
-install_claude() {
-  case "$OS" in
-    Windows)
-      powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \
-        "irm https://claude.ai/install.ps1 | iex"
-      ;;
-    *)
-      curl -fsSL https://claude.ai/install.sh | bash
-      ;;
-  esac
+apt_install() {
+  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "$@"
 }
 
-install_opencode() {
-  case "$OS" in
-    Windows)
-      npm install -g opencode-ai
-      ;;
-    *)
-      curl -fsSL https://opencode.ai/install | bash
-      ;;
-  esac
+run_inno_installer() {
+  local exe="$1"
+  powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \
+    "Start-Process -FilePath '$(cygpath -w "$exe")' -ArgumentList '${INNO_FLAGS}' -Wait"
 }
 
-install_pi() {
-  case "$OS" in
-    Windows)
-      powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \
-        "irm https://pi.dev/install.ps1 | iex"
-      ;;
-    *)
-      curl -fsSL https://pi.dev/install.sh | sh
-      ;;
-  esac
+# Resolve a download URL from Cursor's release API. Cursor publishes no
+# version-pinned endpoint, so the current stable build is what CI gets.
+cursor_download_url() {
+  local platform="$1" key="$2"
+  "${CURL[@]}" -A "Mozilla/5.0 (compatible; skore-cli-ci)" \
+    "https://cursor.com/api/download?platform=${platform}&releaseTrack=stable" \
+  | python3 -c "import json,sys; print(json.load(sys.stdin)['$key'])"
 }
 
-install_codex() {
-  npm install -g @openai/codex
+install_npm_harnesses() {
+  "${NPM[@]}" "@anthropic-ai/claude-code@${CLAUDE_VERSION}"
+  "${NPM[@]}" "opencode-ai@${OPENCODE_VERSION}"
+  "${NPM[@]}" "@openai/codex@${CODEX_VERSION}"
+  # Pi documents --ignore-scripts for npm installs.
+  "${NPM[@]}" --ignore-scripts "@earendil-works/pi-coding-agent@${PI_VERSION}"
 }
 
 install_vscode() {
   case "$OS" in
     Linux)
-      curl -fsSL "https://update.code.visualstudio.com/latest/linux-deb-x64/stable" \
+      "${CURL[@]}" "https://update.code.visualstudio.com/${VSCODE_VERSION}/linux-deb-x64/stable" \
         -o /tmp/vscode.deb
       sudo apt-get update
-      sudo apt-get install -y /tmp/vscode.deb
+      apt_install /tmp/vscode.deb
       ;;
     macOS)
-      brew install --cask visual-studio-code
+      "${CURL[@]}" "https://update.code.visualstudio.com/${VSCODE_VERSION}/darwin-universal/stable" \
+        -o /tmp/vscode.zip
+      sudo unzip -q -o /tmp/vscode.zip -d /Applications
       ;;
     Windows)
-      winget install --id Microsoft.VisualStudioCode -e --disable-interactivity \
-        --accept-package-agreements --accept-source-agreements
-      ;;
-    *)
-      echo "unsupported OS for VS Code: $OS" >&2
-      exit 1
+      "${CURL[@]}" "https://update.code.visualstudio.com/${VSCODE_VERSION}/win32-x64-user/stable" \
+        -o /tmp/vscode-setup.exe
+      run_inno_installer /tmp/vscode-setup.exe
       ;;
   esac
 }
@@ -84,138 +88,116 @@ install_vscode() {
 install_cursor() {
   case "$OS" in
     Linux)
-      python3 - <<'PY'
-import json, urllib.request, pathlib
-url = "https://cursor.com/api/download?platform=linux-x64&releaseTrack=stable"
-with urllib.request.urlopen(url) as response:
-    data = json.load(response)
-deb = data.get("debUrl")
-if not deb:
-    raise SystemExit("cursor API did not return debUrl")
-path = pathlib.Path("/tmp/cursor.deb")
-with urllib.request.urlopen(deb) as response:
-    path.write_bytes(response.read())
-print(path)
-PY
-      sudo apt-get install -y /tmp/cursor.deb
+      # The CDN rejects python-urllib with HTTP 403; curl with a UA works.
+      "${CURL[@]}" -A "Mozilla/5.0 (compatible; skore-cli-ci)" \
+        "$(cursor_download_url linux-x64 debUrl)" -o /tmp/cursor.deb
+      apt_install /tmp/cursor.deb
       ;;
     macOS)
-      brew install --cask cursor
+      "${CURL[@]}" -A "Mozilla/5.0 (compatible; skore-cli-ci)" \
+        "$(cursor_download_url darwin-universal downloadUrl)" -o /tmp/cursor.dmg
+      hdiutil attach -nobrowse -quiet -mountpoint /Volumes/cursor-ci /tmp/cursor.dmg
+      sudo cp -R "/Volumes/cursor-ci/Cursor.app" /Applications/
+      hdiutil detach -quiet /Volumes/cursor-ci
       ;;
     Windows)
-      winget install --id Anysphere.Cursor -e --disable-interactivity \
-        --accept-package-agreements --accept-source-agreements
+      "${CURL[@]}" -A "Mozilla/5.0 (compatible; skore-cli-ci)" \
+        "$(cursor_download_url win32-x64-user downloadUrl)" -o /tmp/cursor-setup.exe
+      run_inno_installer /tmp/cursor-setup.exe
       ;;
-    *)
-      echo "unsupported OS for Cursor: $OS" >&2
-      exit 1
+  esac
+}
+
+# Bob IDE publishes no static download URL. The releases page POSTs these form
+# fields and the endpoint 302s to a presigned object-storage link that expires
+# after 60 seconds, so the artifact has to be fetched in one shot.
+bob_ide_download() {
+  local platform="$1" arch="$2" out="$3"
+  shift 3
+  "${CURL[@]}" -X POST -L \
+    --data-urlencode "platform=${platform}" \
+    --data-urlencode "architecture=${arch}" \
+    --data-urlencode "version=${BOB_IDE_VERSION}" \
+    "$@" "https://bob.ibm.com/api/download/bobide" -o "$out"
+}
+
+install_bob_ide() {
+  case "$OS" in
+    Linux)
+      bob_ide_download linux amd64 /tmp/bobide.deb --data-urlencode "packageType=deb"
+      apt_install /tmp/bobide.deb
+      ;;
+    macOS)
+      bob_ide_download darwin arm64 /tmp/bobide.pkg
+      sudo installer -pkg /tmp/bobide.pkg -target /
+      ;;
+    Windows)
+      bob_ide_download windows x64 /tmp/bobide-setup.exe
+      run_inno_installer /tmp/bobide-setup.exe
       ;;
   esac
 }
 
 install_bob_shell() {
+  # Preselecting the package manager is mandatory, not a nicety: with more than
+  # one manager on PATH the installer loops on an empty read until the job is
+  # killed (the PowerShell variant raises ContainsKey(null) on every pass).
   case "$OS" in
     Windows)
-      powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \
-        "irm -Uri https://bob.ibm.com/download/bobshell.ps1 | iex"
+      powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \
+        "& ([scriptblock]::Create((irm https://bob.ibm.com/download/bobshell.ps1))) -pm npm -v ${BOB_SHELL_VERSION}"
       ;;
     *)
-      curl -fsSL https://bob.ibm.com/download/bobshell.sh | bash
+      "${CURL[@]}" https://bob.ibm.com/download/bobshell.sh \
+        | bash -s -- --pm npm --version "${BOB_SHELL_VERSION}"
       ;;
   esac
 }
 
-install_bob_ide() {
-  # IBM Bob IDE is a desktop package. Query params match the public download page.
-  local dest="/tmp/bob-ide-installer"
-  local url
-  case "$OS" in
-    Linux)
-      url="https://bob.ibm.com/download?bob=ide&os=linux&arch=amd64&format=deb"
-      curl -fsSL "$url" -o "${dest}.deb"
-      sudo apt-get install -y "${dest}.deb"
-      ;;
-    macOS)
-      local arch
-      arch="$(uname -m)"
-      if [[ "$arch" == "arm64" ]]; then
-        url="https://bob.ibm.com/download?bob=ide&os=macos&arch=arm64&format=pkg"
-      else
-        url="https://bob.ibm.com/download?bob=ide&os=macos&arch=x64&format=pkg"
-      fi
-      curl -fsSL "$url" -o "${dest}.pkg"
-      sudo installer -pkg "${dest}.pkg" -target /
-      ;;
-    Windows)
-      url="https://bob.ibm.com/download?bob=ide&os=windows&arch=x64&format=exe"
-      curl -fsSL "$url" -o "${dest}.exe"
-      installer="$(cygpath -w "${dest}.exe")"
-      powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \
-        "Start-Process -FilePath '${installer}' -ArgumentList '/S' -Wait"
-      ;;
-    *)
-      echo "unsupported OS for Bob IDE: $OS" >&2
-      exit 1
-      ;;
-  esac
-}
-
-install_claude
-install_opencode
-install_pi
-install_codex
+install_npm_harnesses
 install_vscode
 install_cursor
 install_bob_shell
 install_bob_ide
 
-append_path "$HOME/.local/bin"
-append_path "$HOME/.opencode/bin"
-append_path "$HOME/.cursor/bin"
-append_path "$HOME/bin"
 if command -v npm >/dev/null 2>&1; then
-  append_path "$(npm prefix -g)/bin"
+  npm_bin="$(npm prefix -g)"
+  [[ "$OS" == "Windows" ]] || npm_bin="${npm_bin}/bin"
+  append_path "$npm_bin"
 fi
-if [[ "$OS" == "Windows" ]]; then
-  append_path "${LOCALAPPDATA:-}/Programs/Microsoft VS Code/bin"
-  append_path "${LOCALAPPDATA:-}/Programs/cursor"
-  append_path "/c/Program Files/Microsoft VS Code/bin"
-  append_path "/c/Program Files/cursor"
-  append_path "${LOCALAPPDATA:-}/Programs/IBM Bob"
-  append_path "/c/Program Files/IBM Bob"
-fi
-
-need_cmd claude
-need_cmd opencode
-need_cmd pi
-need_cmd codex
-need_cmd cursor
-need_cmd bob
-if ! command -v code >/dev/null 2>&1 && ! command -v code-insiders >/dev/null 2>&1; then
-  echo "missing required command: code or code-insiders" >&2
-  exit 1
-fi
-
+append_path "$HOME/.local/bin"
 case "$OS" in
   macOS)
-    if [[ ! -d "/Applications/IBM Bob.app" ]]; then
-      echo "missing Bob IDE app bundle at /Applications/IBM Bob.app" >&2
-      exit 1
-    fi
+    append_path "/Applications/Visual Studio Code.app/Contents/Resources/app/bin"
+    append_path "/Applications/Cursor.app/Contents/Resources/app/bin"
     ;;
-  *)
-    need_cmd bobide
+  Windows)
+    append_path "${LOCALAPPDATA:-}/Programs/Microsoft VS Code/bin"
+    append_path "${LOCALAPPDATA:-}/Programs/cursor/resources/app/bin"
+    append_path "${LOCALAPPDATA:-}/Programs/IBM Bob/bin"
     ;;
 esac
 
-echo "harness binaries are on PATH"
-command -v claude
-command -v opencode
-command -v pi
-command -v codex
-command -v cursor
-command -v bob
-command -v code || command -v code-insiders
-if [[ "$OS" != "macOS" ]]; then
+for name in claude opencode pi codex cursor bob; do
+  need_cmd "$name"
+  command -v "$name"
+done
+
+# Bob IDE ships no command on macOS, where skore-cli detects the bundle instead.
+if [[ "$OS" == "macOS" ]]; then
+  if [[ ! -d "/Applications/IBM Bob.app" ]]; then
+    echo "missing Bob IDE bundle: /Applications/IBM Bob.app" >&2
+    exit 1
+  fi
+else
+  need_cmd bobide
   command -v bobide
+fi
+if command -v code >/dev/null 2>&1; then
+  command -v code
+elif command -v code-insiders >/dev/null 2>&1; then
+  command -v code-insiders
+else
+  echo "missing required command: code or code-insiders" >&2
+  exit 1
 fi
