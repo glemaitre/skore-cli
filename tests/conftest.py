@@ -72,6 +72,12 @@ def release_tarball(catalog_dict):
 
 
 @pytest.fixture
+def legacy_release_tarball(catalog_dict):
+    """Serve a release that still ships the pre-migration ``catalog.json``."""
+    return _build_tarball(catalog_dict, catalog_name="catalog.json")
+
+
+@pytest.fixture
 def release(monkeypatch):
     """Serve fake GitHub skills releases from in-memory tarballs."""
     state = {

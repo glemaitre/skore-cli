@@ -2,7 +2,6 @@ import json
 from urllib.request import Request
 
 from skore_cli.skills import _catalog
-from conftest import _build_tarball
 
 
 def test_fetch_bytes_sends_user_agent(monkeypatch):
@@ -57,9 +56,7 @@ def test_latest_release_tag_custom_repo(monkeypatch):
     monkeypatch.setattr(_catalog, "_fetch_bytes", fake_fetch)
 
     assert _catalog.latest_release_tag("acme/skills") == "9.9.9"
-    assert captured == [
-        "https://api.github.com/repos/acme/skills/releases/latest"
-    ]
+    assert captured == ["https://api.github.com/repos/acme/skills/releases/latest"]
 
 
 def test_download_release(release_tarball, monkeypatch):
@@ -110,12 +107,8 @@ def test_fetch_release_custom_repo(release, catalog_dict):
     assert (root / ".catalog.json").is_file()
 
 
-def test_load_catalog_legacy_tarball(catalog_dict, monkeypatch):
-    monkeypatch.setattr(
-        _catalog,
-        "_fetch_bytes",
-        lambda url: _build_tarball(catalog_dict, catalog_name="catalog.json"),
-    )
+def test_load_catalog_legacy_tarball(catalog_dict, legacy_release_tarball, monkeypatch):
+    monkeypatch.setattr(_catalog, "_fetch_bytes", lambda url: legacy_release_tarball)
 
     root = _catalog.download_release("0.1.0")
     assert _catalog.load_catalog(root) == catalog_dict

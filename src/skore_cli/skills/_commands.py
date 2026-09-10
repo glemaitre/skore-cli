@@ -175,9 +175,7 @@ def _persist_source_catalog(
 
 def _prune_local_catalog(target: Path) -> None:
     """Drop catalog sources that no longer have an installed skill in ``target``."""
-    remaining = {
-        _skill_repository(sidecar) for _, sidecar in _installed(target)
-    }
+    remaining = {_skill_repository(sidecar) for _, sidecar in _installed(target)}
     envelope = _read_local_catalog(target)
     sources = {
         repo: entry
@@ -224,9 +222,7 @@ def _expand(ids: list[str], skills: dict, workflows: dict) -> list[dict]:
     return list(selected.values())
 
 
-def _install_skill(
-    skill: dict, root: Path, target: Path, tag: str, repo: str
-) -> None:
+def _install_skill(skill: dict, root: Path, target: Path, tag: str, repo: str) -> None:
     """Copy ``skill`` from the extracted release into ``target`` and write a sidecar."""
     source = root / skill["path"]
     destination = target / skill["id"]
@@ -282,8 +278,7 @@ def _installed_skill_sources(
         for _, sidecar in _installed(target):
             sources.setdefault(sidecar["id"], set()).add(_skill_repository(sidecar))
     return {
-        skill_id: _format_sources(sorted(repos))
-        for skill_id, repos in sources.items()
+        skill_id: _format_sources(sorted(repos)) for skill_id, repos in sources.items()
     }
 
 
@@ -504,9 +499,7 @@ def install(ids, agent, global_, repo, all_) -> None:
 
         targets = resolve_targets(agent_names, global_=global_)
 
-        tree = Tree(
-            f"Installing {len(selected)} skill(s) from {repo} release {tag}"
-        )
+        tree = Tree(f"Installing {len(selected)} skill(s) from {repo} release {tag}")
         for _, target in targets:
             branch = tree.add(f"[skore.path]{target}[/]")
             for skill in selected:
@@ -628,9 +621,7 @@ def update(ids, agent, global_, all_) -> None:
                 else:
                     _write_sidecar(target / sidecar["id"], skill, tag, repo)
             for target in {
-                t
-                for t, sidecar in selected_items
-                if _skill_repository(sidecar) == repo
+                t for t, sidecar in selected_items if _skill_repository(sidecar) == repo
             }:
                 _persist_source_catalog(target, repo, tag, catalog)
 

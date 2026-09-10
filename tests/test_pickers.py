@@ -174,11 +174,14 @@ async def test_installed_picker_shows_source_in_label():
     )
     async with app.run_test() as pilot:
         await pilot.pause()
-        prompt = app.query_one("#sel-installed", SelectionList).get_option_at_index(
-            0
-        ).prompt
+        prompt = (
+            app.query_one("#sel-installed", SelectionList).get_option_at_index(0).prompt
+        )
 
     assert prompt == "alpha (acme/skills)"
+
+
+async def test_installed_picker_confirms_selection():
     app = InstalledSkillsPicker(["alpha", "beta"], title="Update skills")
     async with app.run_test() as pilot:
         app.query_one("#sel-installed", SelectionList).select_all()

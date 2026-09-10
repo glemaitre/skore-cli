@@ -847,9 +847,7 @@ def test_update_mixed_repos_fetches_each_origin(release, workspace):
 
 def test_update_legacy_sidecar_defaults_to_official_repo(release, workspace):
     _invoke(["skills", "install", "alpha"])
-    sidecar_path = (
-        workspace.project / ".agents" / "skills" / "alpha" / SIDECAR
-    )
+    sidecar_path = workspace.project / ".agents" / "skills" / "alpha" / SIDECAR
     payload = json.loads(sidecar_path.read_text())
     del payload["repository"]
     sidecar_path.write_text(json.dumps(payload))
