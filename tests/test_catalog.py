@@ -1,6 +1,8 @@
 import json
 from urllib.request import Request
 
+import pytest
+
 from skore_cli.skills import _catalog
 
 
@@ -25,6 +27,24 @@ def test_fetch_bytes_sends_user_agent(monkeypatch):
 
     assert _catalog._fetch_bytes("https://example.com") == b"payload"
     assert captured["request"].headers["User-agent"] == "skore-skills-cli"
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("probabl-ai/skills", "probabl-ai/skills"),
+        ("  acme/skills  ", "acme/skills"),
+        ("/acme/skills/", "acme/skills"),
+    ],
+)
+def test_normalize_github_repo(value, expected):
+    assert _catalog.normalize_github_repo(value) == expected
+
+
+@pytest.mark.parametrize("value", ["", "acme", "acme/", "/skills", "a/b/c"])
+def test_normalize_github_repo_rejects_invalid(value):
+    with pytest.raises(ValueError, match="owner/name"):
+        _catalog.normalize_github_repo(value)
 
 
 def test_latest_release_tag(release):

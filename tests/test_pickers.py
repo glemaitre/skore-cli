@@ -25,12 +25,11 @@ WORKSPACES = [("ws-1", "First"), ("ws-2", "Second")]
 
 
 async def test_textual_apps_show_banner():
-    catalog = {"workflows": [], "skills": []}
     apps = [
         HarnessPicker(HARNESSES),
         WorkspacePicker(WORKSPACES),
         InstalledSkillsPicker(["alpha"], title="Update skills"),
-        ProbablSkillsInstaller(catalog, agent=(), default_global=False),
+        ProbablSkillsInstaller(agent=(), default_global=False),
     ]
 
     for app in apps:

@@ -15,6 +15,31 @@ _USER_AGENT = "skore-skills-cli"
 CATALOG_FILENAMES = (".catalog.json", "catalog.json")
 
 
+def normalize_github_repo(value: str) -> str:
+    """Return a canonical ``owner/name`` GitHub repository identifier.
+
+    Parameters
+    ----------
+    value : str
+        User-supplied repository string, possibly with extra whitespace.
+
+    Returns
+    -------
+    str
+        ``owner/name`` with surrounding slashes and whitespace stripped.
+
+    Raises
+    ------
+    ValueError
+        If ``value`` is not exactly ``owner/name`` with both parts non-empty.
+    """
+    repo = value.strip().strip("/")
+    owner, sep, name = repo.partition("/")
+    if not sep or "/" in name or not owner or not name:
+        raise ValueError(f"GitHub repository must be owner/name, got {value!r}")
+    return f"{owner}/{name}"
+
+
 def _fetch_bytes(url: str) -> bytes:
     """Download ``url`` and return its raw content.
 

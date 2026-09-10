@@ -33,8 +33,10 @@ Install skills into the current project by default. Pass `--global`/`-g` for a
 user-wide install and `--agent`/`-a` to target specific agents (`agents`,
 `claude-code`, `cursor`, `codex`, `gemini`). Pass `--repo owner/name` on
 **install** to pull from another GitHub catalog that ships `.catalog.json`
-(the default is `probabl-ai/skills`). `list` and `update` reuse the stored
-source and show it in their output; they do not take `--repo`.
+(the default is `probabl-ai/skills`). Interactive `skore skills install` also
+lets you edit that `owner/name` in the wizard; `--repo` only pre-fills the
+field. `list` and `update` reuse the stored source and show it in their output;
+they do not take `--repo`.
 
 ```bash
 skore skills list          # list installed skills (with source)

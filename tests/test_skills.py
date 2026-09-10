@@ -5,8 +5,9 @@ from click.testing import CliRunner
 from textual.widgets import SelectionList, TabbedContent
 
 from skore_cli import cli
+from skore_cli.app._help import HelpInput
 from skore_cli.skills import _commands as _skills
-from skore_cli.skills._catalog import fetch_release
+from skore_cli.skills._catalog import GITHUB_REPO, fetch_release
 from skore_cli.skills._commands import (
     ProbablSkillsInstaller,
 )
@@ -39,9 +40,23 @@ async def _wait_wizard_step(app, pilot, step_id: str) -> None:
             radio = app.query_one("#scope", AutoRadioSet)
             if radio.has_focus and radio.pressed_index >= 0:
                 return
+        elif step_id == "step-skills":
+            try:
+                app.query_one("#sel-workflows", SelectionList)
+            except Exception:
+                continue
+            return
         else:
             return
     raise AssertionError(f"wizard step {step_id!r} not ready")
+
+
+async def _confirm_source(app, pilot, repo: str | None = None) -> None:
+    """Confirm the source step, optionally overriding the GitHub repo."""
+    if repo is not None:
+        app.query_one("#repo", HelpInput).value = repo
+    await pilot.press("enter")
+    await _wait_wizard_step(app, pilot, "step-skills")
 
 
 async def _wait_workflow_skills_sync(
@@ -152,15 +167,20 @@ def test_install_global_without_selection_errors(release, workspace):
 
 def test_install_interactive_selection(release, workspace, monkeypatch):
     monkeypatch.setattr(_skills, "is_non_interactive", lambda: False)
-    monkeypatch.setattr(
-        _skills,
-        "_interactive_install_options",
-        lambda catalog, *, agent, default_global: (
+
+    def fake_options(*, agent, default_global, default_repo):
+        tag, root, catalog = fetch_release(default_repo)
+        return (
             [_skills._index(catalog)[0]["alpha"]],
             ["agents"],
             False,
-        ),
-    )
+            default_repo,
+            tag,
+            root,
+            catalog,
+        )
+
+    monkeypatch.setattr(_skills, "_interactive_install_options", fake_options)
 
     result = _invoke(["skills", "install"])
 
@@ -172,15 +192,20 @@ def test_install_interactive_selection(release, workspace, monkeypatch):
 
 def test_install_interactive_agent_and_global(release, workspace, monkeypatch):
     monkeypatch.setattr(_skills, "is_non_interactive", lambda: False)
-    monkeypatch.setattr(
-        _skills,
-        "_interactive_install_options",
-        lambda catalog, *, agent, default_global: (
+
+    def fake_options(*, agent, default_global, default_repo):
+        tag, root, catalog = fetch_release(default_repo)
+        return (
             [_skills._index(catalog)[0]["alpha"]],
             ["cursor"],
             True,
-        ),
-    )
+            default_repo,
+            tag,
+            root,
+            catalog,
+        )
+
+    monkeypatch.setattr(_skills, "_interactive_install_options", fake_options)
 
     result = _invoke(["skills", "install"])
 
@@ -194,7 +219,7 @@ def test_install_interactive_cancelled(release, workspace, monkeypatch):
     monkeypatch.setattr(
         _skills,
         "_interactive_install_options",
-        lambda catalog, *, agent, default_global: None,
+        lambda *, agent, default_global, default_repo: None,
     )
 
     result = _invoke(["skills", "install"])
@@ -204,10 +229,25 @@ def test_install_interactive_cancelled(release, workspace, monkeypatch):
     assert not (workspace.project / ".agents").exists()
 
 
-def _fake_app(result):
+def _fake_app(result, *, catalog, tag="0.1.0", root):
     class _FakeApp:
-        def __init__(self, catalog, *, agent, default_global):
+        def __init__(self, *, agent, default_global, default_repo):
             self.result = result
+            self._catalog = catalog
+            self._tag = tag
+            self._root = root
+
+        @property
+        def catalog(self):
+            return self._catalog
+
+        @property
+        def tag(self):
+            return self._tag
+
+        @property
+        def root(self):
+            return self._root
 
         def run(self):
             return None
@@ -227,62 +267,97 @@ def _fake_manage_picker(result):
 
 
 def test_interactive_options_expands_workflow(release, monkeypatch):
-    _, _, catalog = fetch_release()
+    tag, root, catalog = fetch_release()
     monkeypatch.setattr(
-        _skills, "ProbablSkillsInstaller", _fake_app((["flow"], ["agents"], False))
+        _skills,
+        "ProbablSkillsInstaller",
+        _fake_app(
+            (["flow"], ["agents"], False, GITHUB_REPO),
+            catalog=catalog,
+            tag=tag,
+            root=root,
+        ),
     )
 
-    selected, agents, global_ = _skills._interactive_install_options(
-        catalog, agent=(), default_global=False
+    selected, agents, global_, repo, out_tag, out_root, out_catalog = (
+        _skills._interactive_install_options(
+            agent=(), default_global=False, default_repo=GITHUB_REPO
+        )
     )
 
     assert {skill["id"] for skill in selected} == {"alpha", "beta"}
     assert agents == ["agents"]
     assert global_ is False
+    assert repo == GITHUB_REPO
+    assert out_tag == tag
+    assert out_root == root
+    assert out_catalog == catalog
 
 
 def test_interactive_options_individual_global(release, monkeypatch):
-    _, _, catalog = fetch_release()
+    tag, root, catalog = fetch_release()
     monkeypatch.setattr(
-        _skills, "ProbablSkillsInstaller", _fake_app((["beta"], ["cursor"], True))
+        _skills,
+        "ProbablSkillsInstaller",
+        _fake_app(
+            (["beta"], ["cursor"], True, GITHUB_REPO),
+            catalog=catalog,
+            tag=tag,
+            root=root,
+        ),
     )
 
-    selected, agents, global_ = _skills._interactive_install_options(
-        catalog, agent=(), default_global=False
+    selected, agents, global_, repo, _, _, _ = _skills._interactive_install_options(
+        agent=(), default_global=False, default_repo=GITHUB_REPO
     )
 
     assert {skill["id"] for skill in selected} == {"beta"}
     assert agents == ["cursor"]
     assert global_ is True
+    assert repo == GITHUB_REPO
 
 
 def test_interactive_options_cancelled(release, monkeypatch):
-    _, _, catalog = fetch_release()
-    monkeypatch.setattr(_skills, "ProbablSkillsInstaller", _fake_app(None))
+    tag, root, catalog = fetch_release()
+    monkeypatch.setattr(
+        _skills,
+        "ProbablSkillsInstaller",
+        _fake_app(None, catalog=catalog, tag=tag, root=root),
+    )
 
     assert (
-        _skills._interactive_install_options(catalog, agent=(), default_global=False)
+        _skills._interactive_install_options(
+            agent=(), default_global=False, default_repo=GITHUB_REPO
+        )
         is None
     )
 
 
 def test_interactive_options_empty_selection(release, monkeypatch):
-    _, _, catalog = fetch_release()
+    tag, root, catalog = fetch_release()
     monkeypatch.setattr(
-        _skills, "ProbablSkillsInstaller", _fake_app(([], ["agents"], False))
+        _skills,
+        "ProbablSkillsInstaller",
+        _fake_app(
+            ([], ["agents"], False, GITHUB_REPO),
+            catalog=catalog,
+            tag=tag,
+            root=root,
+        ),
     )
 
     assert (
-        _skills._interactive_install_options(catalog, agent=(), default_global=False)
+        _skills._interactive_install_options(
+            agent=(), default_global=False, default_repo=GITHUB_REPO
+        )
         is None
     )
 
 
 async def test_wizard_app_full_flow(release):
-    _, _, catalog = fetch_release()
-
-    app = ProbablSkillsInstaller(catalog, agent=(), default_global=False)
+    app = ProbablSkillsInstaller(agent=(), default_global=False)
     async with app.run_test() as pilot:
+        await _confirm_source(app, pilot)
         app.query_one("#sel-workflows", SelectionList).select_all()
         await pilot.pause()
         await pilot.press("enter")  # confirm skills -> agents
@@ -292,18 +367,18 @@ async def test_wizard_app_full_flow(release):
         await pilot.press("enter")  # confirm scope -> install
         await pilot.pause()
 
-    selected_ids, agents, global_ = app.result
+    selected_ids, agents, global_, repo = app.result
 
     assert set(selected_ids) == {"flow", "alpha", "beta"}
     assert agents == ["agents"]
     assert global_ is False
+    assert repo == GITHUB_REPO
 
 
 async def test_wizard_app_selecting_workflow_selects_its_skills(release):
-    _, _, catalog = fetch_release()
-
-    app = ProbablSkillsInstaller(catalog, agent=(), default_global=False)
+    app = ProbablSkillsInstaller(agent=(), default_global=False)
     async with app.run_test() as pilot:
+        await _confirm_source(app, pilot)
         app.query_one("#sel-workflows", SelectionList).select_all()
         await _wait_workflow_skills_sync(app, pilot, {"alpha", "beta"})
         selected = list(app.query_one("#sel-skills", SelectionList).selected)
@@ -312,10 +387,9 @@ async def test_wizard_app_selecting_workflow_selects_its_skills(release):
 
 
 async def test_wizard_app_deselecting_workflow_deselects_its_skills(release):
-    _, _, catalog = fetch_release()
-
-    app = ProbablSkillsInstaller(catalog, agent=(), default_global=False)
+    app = ProbablSkillsInstaller(agent=(), default_global=False)
     async with app.run_test() as pilot:
+        await _confirm_source(app, pilot)
         workflows = app.query_one("#sel-workflows", SelectionList)
         workflows.select_all()
         await _wait_workflow_skills_sync(app, pilot, {"alpha", "beta"})
@@ -327,10 +401,9 @@ async def test_wizard_app_deselecting_workflow_deselects_its_skills(release):
 
 
 async def test_wizard_app_single_agent_choice(release):
-    _, _, catalog = fetch_release()
-
-    app = ProbablSkillsInstaller(catalog, agent=(), default_global=False)
+    app = ProbablSkillsInstaller(agent=(), default_global=False)
     async with app.run_test() as pilot:
+        await _confirm_source(app, pilot)
         app.query_one("#sel-workflows", SelectionList).select_all()
         await pilot.pause()
         await pilot.press("enter")  # confirm skills -> agents
@@ -342,16 +415,15 @@ async def test_wizard_app_single_agent_choice(release):
         await pilot.press("enter")  # confirm scope -> install
         await pilot.pause()
 
-    _, agents, _ = app.result
+    _, agents, _, _ = app.result
 
     assert agents == ["claude-code"]
 
 
 async def test_wizard_app_skips_agent_step_when_provided(release):
-    _, _, catalog = fetch_release()
-
-    app = ProbablSkillsInstaller(catalog, agent=("cursor",), default_global=True)
+    app = ProbablSkillsInstaller(agent=("cursor",), default_global=True)
     async with app.run_test() as pilot:
+        await _confirm_source(app, pilot)
         app.query_one("#sel-skills", SelectionList).select_all()
         await pilot.pause()
         await pilot.press("enter")  # confirm skills -> scope (agents skipped)
@@ -359,17 +431,16 @@ async def test_wizard_app_skips_agent_step_when_provided(release):
         await pilot.press("enter")  # confirm scope -> install
         await pilot.pause()
 
-    selected_ids, agents, global_ = app.result
+    selected_ids, agents, global_, repo = app.result
 
     assert set(selected_ids) == {"alpha", "beta"}
     assert agents == ["cursor"]
     assert global_ is True
+    assert repo == GITHUB_REPO
 
 
 async def test_wizard_app_cancel(release):
-    _, _, catalog = fetch_release()
-
-    app = ProbablSkillsInstaller(catalog, agent=(), default_global=False)
+    app = ProbablSkillsInstaller(agent=(), default_global=False)
     async with app.run_test() as pilot:
         await pilot.press("escape")
         await pilot.pause()
@@ -378,10 +449,9 @@ async def test_wizard_app_cancel(release):
 
 
 async def test_wizard_app_requires_selection(release):
-    _, _, catalog = fetch_release()
-
-    app = ProbablSkillsInstaller(catalog, agent=(), default_global=False)
+    app = ProbablSkillsInstaller(agent=(), default_global=False)
     async with app.run_test() as pilot:
+        await _confirm_source(app, pilot)
         await pilot.press("enter")  # nothing selected -> stay on skills
         await pilot.pause()
         active = app.query_one("#wizard").active
@@ -389,6 +459,57 @@ async def test_wizard_app_requires_selection(release):
         await pilot.pause()
 
     assert active == "step-skills"
+
+
+async def test_wizard_app_rejects_invalid_repo(release):
+    app = ProbablSkillsInstaller(agent=(), default_global=False)
+    async with app.run_test() as pilot:
+        app.query_one("#repo", HelpInput).value = "not-a-repo"
+        await pilot.press("enter")
+        await pilot.pause()
+        active = app.query_one("#wizard").active
+        await pilot.press("escape")
+        await pilot.pause()
+
+    assert active == "step-source"
+    assert app.catalog is None
+
+
+async def test_wizard_app_loads_custom_repo(release):
+    other = {
+        "skills": [
+            {
+                "id": "gamma",
+                "path": "skills/gamma",
+                "title": "Gamma",
+                "summary": "The gamma skill",
+                "category": "tooling",
+                "hash": "hash-gamma-1",
+            }
+        ],
+        "workflows": [],
+    }
+    release["by_repo"]["acme/skills"] = {"tag": "9.0.0", "catalog": other}
+
+    app = ProbablSkillsInstaller(
+        agent=("cursor",), default_global=False, default_repo=GITHUB_REPO
+    )
+    async with app.run_test() as pilot:
+        await _confirm_source(app, pilot, "acme/skills")
+        app.query_one("#sel-skills", SelectionList).select_all()
+        await pilot.pause()
+        await pilot.press("enter")
+        await _wait_wizard_step(app, pilot, "step-scope")
+        await pilot.press("enter")
+        await pilot.pause()
+
+    selected_ids, agents, global_, repo = app.result
+
+    assert selected_ids == ["gamma"]
+    assert agents == ["cursor"]
+    assert global_ is False
+    assert repo == "acme/skills"
+    assert app.tag == "9.0.0"
 
 
 def test_list_installed(release, workspace):
@@ -560,14 +681,13 @@ def test_skills_no_subcommand_shows_help(release, workspace):
 
 
 async def test_auto_radio_set_selects_on_arrow(release):
-    _, _, catalog = fetch_release()
-
-    app = ProbablSkillsInstaller(catalog, agent=(), default_global=False)
+    app = ProbablSkillsInstaller(agent=(), default_global=False)
     async with app.run_test() as pilot:
+        await _confirm_source(app, pilot)
         app.query_one("#sel-workflows", SelectionList).select_all()
         await pilot.pause()
         await pilot.press("enter")
-        await pilot.pause()
+        await _wait_wizard_step(app, pilot, "step-agents")
         radio = app.query_one("#agents", AutoRadioSet)
         assert radio.pressed_index == 0
         await pilot.press("down")

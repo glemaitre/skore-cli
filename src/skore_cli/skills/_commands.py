@@ -382,43 +382,93 @@ def _resolve_agent_names(agent: tuple[str, ...]) -> list[str]:
 
 
 def _interactive_install_options(
-    catalog: dict[str, Any],
     *,
     agent: tuple[str, ...],
     default_global: bool,
-) -> tuple[list[dict], list[str], bool] | None:
-    """Run the tabbed Textual wizard to choose skills, agents and scope.
+    default_repo: str,
+) -> tuple[list[dict], list[str], bool, str, str, Path, dict[str, Any]] | None:
+    """Run the tabbed Textual wizard to choose source, skills, agents and scope.
 
     Parameters
     ----------
-    catalog : dict
-        The parsed ``catalog.json`` content.
     agent : tuple of str
         Agents passed on the command line; when non-empty the agent step is
         skipped.
     default_global : bool
         The pre-selected scope (``True`` for the user-level directory).
+    default_repo : str
+        GitHub ``owner/name`` pre-filled in the source step.
 
     Returns
     -------
     tuple or None
-        ``(selected_skills, agent_names, global_)`` or ``None`` when the user
-        aborts or selects nothing.
+        ``(selected_skills, agent_names, global_, repo, tag, root, catalog)``
+        or ``None`` when the user aborts or selects nothing. ``root`` is an
+        extracted release the caller must delete.
     """
-    skills_by_id, workflows_by_id = _index(catalog)
-
-    app = ProbablSkillsInstaller(catalog, agent=agent, default_global=default_global)
+    app = ProbablSkillsInstaller(
+        agent=agent, default_global=default_global, default_repo=default_repo
+    )
     app.run()
 
     if app.result is None:
         return None
 
-    selected_ids, agent_names, global_ = app.result
-    if not selected_ids or not agent_names:
+    selected_ids, agent_names, global_, repo = app.result
+    if (
+        not selected_ids
+        or not agent_names
+        or app.catalog is None
+        or app.root is None
+        or app.tag is None
+    ):
+        if app.root is not None:
+            shutil.rmtree(app.root.parent, ignore_errors=True)
         return None
 
+    skills_by_id, workflows_by_id = _index(app.catalog)
     selected = _expand(selected_ids, skills_by_id, workflows_by_id)
-    return selected, agent_names, global_
+    return selected, agent_names, global_, repo, app.tag, app.root, app.catalog
+
+
+def _copy_selected_skills(
+    selected: list[dict],
+    agent_names: list[str],
+    *,
+    global_: bool,
+    repo: str,
+    tag: str,
+    root: Path,
+    catalog: dict[str, Any],
+) -> int:
+    """Copy ``selected`` skills into the resolved targets and persist catalogs."""
+    targets = resolve_targets(agent_names, global_=global_)
+
+    tree = Tree(f"Installing {len(selected)} skill(s) from {repo} release {tag}")
+    for _, target in targets:
+        branch = tree.add(f"[skore.path]{target}[/]")
+        for skill in selected:
+            branch.add(
+                f"[skore.skill]{skill['id']}[/]  "
+                f"[skore.muted]{skill.get('summary', '')}[/]"
+            )
+    console.print(tree)
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("{task.description}"),
+        BarColumn(),
+        console=console,
+        transient=True,
+    ) as progress:
+        task = progress.add_task("Installing", total=len(selected) * len(targets))
+        for _, target in targets:
+            for skill in selected:
+                _install_skill(skill, root, target, tag, repo)
+                progress.advance(task)
+            _persist_source_catalog(target, repo, tag, catalog)
+
+    return len(targets)
 
 
 @click.group(invoke_without_command=True)
@@ -450,7 +500,7 @@ def install(ids, agent, global_, repo, all_) -> None:
     """Install skill(s) or workflow(s) from the latest release.
 
     Run without arguments to launch the interactive installer (a tabbed wizard
-    for the selection, target agent and install scope).
+    for the GitHub source, skill selection, target agent and install scope).
 
     Pass skill or workflow ids (or ``--all``) to install non-interactively,
     optionally with ``--agent`` and ``--global`` to choose the targets and
@@ -460,72 +510,75 @@ def install(ids, agent, global_, repo, all_) -> None:
     ``skore skills install all``.
 
     Use ``--repo owner/name`` to install from a catalog other than the default.
+    In the interactive wizard that value is pre-filled and can still be edited.
     """
-    with _release(repo) as (tag, root, catalog):
-        skills_by_id, workflows_by_id = _index(catalog)
-        ids = list(ids)
+    ids = list(ids)
+    if "all" in ids:
+        all_ = True
+        ids = [i for i in ids if i != "all"]
 
-        if "all" in ids:
-            all_ = True
-            ids = [i for i in ids if i != "all"]
-
-        if ids or all_ or agent or global_:
-            if not (ids or all_):
-                raise click.UsageError(
-                    "Specify skill/workflow ids or --all to install non-interactively."
-                )
-            selected = (
-                list(skills_by_id.values())
-                if all_
-                else _expand(ids, skills_by_id, workflows_by_id)
-            )
-            agent_names = _resolve_agent_names(agent)
-        else:
-            if is_non_interactive():
+    interactive = not (ids or all_ or agent or global_)
+    if interactive:
+        if is_non_interactive():
+            with _release(repo) as (_tag, _root, catalog):
                 _render_catalog(catalog)
                 console.print(
                     "Run [skore.cmd]skore skills install <ids>[/] to install "
                     "specific skills, or [skore.cmd]skore skills install all[/] "
                     "to install everything."
                 )
-                return
-            options = _interactive_install_options(
-                catalog, agent=agent, default_global=global_
+            return
+        options = _interactive_install_options(
+            agent=agent, default_global=global_, default_repo=repo
+        )
+        if not options:
+            console.print("Nothing selected.")
+            return
+        selected, agent_names, global_, repo, tag, root, catalog = options
+        try:
+            n_targets = _copy_selected_skills(
+                selected,
+                agent_names,
+                global_=global_,
+                repo=repo,
+                tag=tag,
+                root=root,
+                catalog=catalog,
             )
-            if not options:
-                console.print("Nothing selected.")
-                return
-            selected, agent_names, global_ = options
+        finally:
+            shutil.rmtree(root.parent, ignore_errors=True)
+        console.print(
+            f"[skore.ok]+[/] installed [skore.skill]{len(selected)}[/] skill(s) "
+            f"into {n_targets} location(s) from {repo} release {tag}"
+        )
+        return
 
-        targets = resolve_targets(agent_names, global_=global_)
+    if not (ids or all_):
+        raise click.UsageError(
+            "Specify skill/workflow ids or --all to install non-interactively."
+        )
 
-        tree = Tree(f"Installing {len(selected)} skill(s) from {repo} release {tag}")
-        for _, target in targets:
-            branch = tree.add(f"[skore.path]{target}[/]")
-            for skill in selected:
-                branch.add(
-                    f"[skore.skill]{skill['id']}[/]  "
-                    f"[skore.muted]{skill.get('summary', '')}[/]"
-                )
-        console.print(tree)
-
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("{task.description}"),
-            BarColumn(),
-            console=console,
-            transient=True,
-        ) as progress:
-            task = progress.add_task("Installing", total=len(selected) * len(targets))
-            for _, target in targets:
-                for skill in selected:
-                    _install_skill(skill, root, target, tag, repo)
-                    progress.advance(task)
-                _persist_source_catalog(target, repo, tag, catalog)
+    with _release(repo) as (tag, root, catalog):
+        skills_by_id, workflows_by_id = _index(catalog)
+        selected = (
+            list(skills_by_id.values())
+            if all_
+            else _expand(ids, skills_by_id, workflows_by_id)
+        )
+        agent_names = _resolve_agent_names(agent)
+        n_targets = _copy_selected_skills(
+            selected,
+            agent_names,
+            global_=global_,
+            repo=repo,
+            tag=tag,
+            root=root,
+            catalog=catalog,
+        )
 
     console.print(
         f"[skore.ok]+[/] installed [skore.skill]{len(selected)}[/] skill(s) "
-        f"into {len(targets)} location(s) from {repo} release {tag}"
+        f"into {n_targets} location(s) from {repo} release {tag}"
     )
 
 
