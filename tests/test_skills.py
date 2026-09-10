@@ -5,20 +5,43 @@ from click.testing import CliRunner
 from textual.widgets import SelectionList, TabbedContent
 
 from skore_cli import cli
-from skore_cli.app._help import HelpInput
+from skore_cli.app._help import HelpInput, HelpScreen
 from skore_cli.skills import _commands as _skills
 from skore_cli.skills._catalog import GITHUB_REPO, fetch_release
 from skore_cli.skills._commands import (
     ProbablSkillsInstaller,
 )
+from skore_cli.skills.app import _install as _install_app
 from skore_cli.skills.app._widgets import AutoRadioSet
 
 SIDECAR = ".skore-skill.json"
+LOCAL_CATALOG = ".catalog.json"
 _ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
 
+GAMMA_CATALOG = {
+    "skills": [
+        {
+            "id": "gamma",
+            "path": "skills/gamma",
+            "title": "Gamma",
+            "summary": "The gamma skill",
+            "category": "tooling",
+            "hash": "hash-gamma-1",
+        }
+    ],
+    "workflows": [],
+}
 
-def _invoke(args):
-    return CliRunner().invoke(cli, args)
+
+def _invoke(args, **kwargs):
+    return CliRunner().invoke(cli, args, **kwargs)
+
+
+def _register_gamma(release, tag="9.0.0"):
+    """Serve a second catalog under ``acme/skills`` and return it."""
+    catalog = json.loads(json.dumps(GAMMA_CATALOG))
+    release["by_repo"]["acme/skills"] = {"tag": tag, "catalog": catalog}
+    return catalog
 
 
 def _plain_output(output: str) -> str:
@@ -41,9 +64,15 @@ async def _wait_wizard_step(app, pilot, step_id: str) -> None:
             if radio.has_focus and radio.pressed_index >= 0:
                 return
         elif step_id == "step-skills":
-            try:
-                app.query_one("#sel-workflows", SelectionList)
-            except Exception:
+            # Switching sources remounts the lists, so wait for the single
+            # remaining list to match the catalog that was just fetched.
+            lists = app.query("#sel-skills")
+            if len(lists) != 1 or app.catalog is None:
+                continue
+            expected = {skill["id"] for skill in app.catalog["skills"]}
+            if {option.value for option in lists.first(SelectionList).options} != (
+                expected
+            ):
                 continue
             return
         else:
@@ -57,6 +86,12 @@ async def _confirm_source(app, pilot, repo: str | None = None) -> None:
         app.query_one("#repo", HelpInput).value = repo
     await pilot.press("enter")
     await _wait_wizard_step(app, pilot, "step-skills")
+
+
+async def _back_to_source(app, pilot) -> None:
+    """Reopen the source step of an already-confirmed wizard by clicking its tab."""
+    await pilot.click("#--content-tab-step-source")
+    await _wait_wizard_step(app, pilot, "step-source")
 
 
 async def _wait_workflow_skills_sync(
@@ -343,6 +378,27 @@ def test_interactive_options_empty_selection(release, monkeypatch):
             catalog=catalog,
             tag=tag,
             root=root,
+        ),
+    )
+
+    assert (
+        _skills._interactive_install_options(
+            agent=(), default_global=False, default_repo=GITHUB_REPO
+        )
+        is None
+    )
+
+
+def test_interactive_options_without_release(release, monkeypatch):
+    """A wizard that never fetched a release has nothing to clean up."""
+    monkeypatch.setattr(
+        _skills,
+        "ProbablSkillsInstaller",
+        _fake_app(
+            (["alpha"], ["agents"], False, GITHUB_REPO),
+            catalog=None,
+            tag=None,
+            root=None,
         ),
     )
 
@@ -749,6 +805,15 @@ def test_remove_interactive_cancelled(release, workspace, monkeypatch):
     assert skill_dir.is_dir()
 
 
+def test_remove_interactive_without_any_skill(release, workspace, monkeypatch):
+    monkeypatch.setattr(_skills, "is_non_interactive", lambda: False)
+
+    result = _invoke(["skills", "remove"])
+
+    assert result.exit_code == 0
+    assert "No skills installed" in result.output
+
+
 # --------------------------------------------------------------------------- #
 # Agent detection: skills install non-interactive
 # --------------------------------------------------------------------------- #
@@ -1026,3 +1091,233 @@ def test_update_migrates_legacy_catalog_json(release, workspace):
     assert set(local_catalog["sources"]) == {"probabl-ai/skills"}
     sidecar = json.loads(sidecar_path.read_text())
     assert sidecar["repository"] == "probabl-ai/skills"
+
+
+# --------------------------------------------------------------------------- #
+# Local catalog envelope helpers
+# --------------------------------------------------------------------------- #
+
+
+def test_envelope_from_catalog_data_wraps_non_mapping():
+    """A catalog file that is not a mapping still yields a default source."""
+    envelope = _skills._envelope_from_catalog_data(["not", "a", "mapping"])
+
+    assert envelope == {"sources": {GITHUB_REPO: ["not", "a", "mapping"]}}
+
+
+def test_envelope_from_catalog_data_honors_declared_repository():
+    envelope = _skills._envelope_from_catalog_data({"repository": "acme/skills"})
+
+    assert set(envelope["sources"]) == {"acme/skills"}
+
+
+def test_installed_ignores_unmanaged_entries(release, workspace):
+    """Neither the catalog file nor a hand-written directory is an installed skill."""
+    _invoke(["skills", "install", "alpha"])
+    skills_dir = workspace.project / ".agents" / "skills"
+    (skills_dir / "handwritten").mkdir()
+
+    assert [sidecar["id"] for _, sidecar in _skills._installed(skills_dir)] == ["alpha"]
+
+
+# --------------------------------------------------------------------------- #
+# Multi-source remove / update edge cases
+# --------------------------------------------------------------------------- #
+
+
+def test_remove_keeps_catalog_source_still_in_use(release, workspace):
+    """Removing one repository's skill leaves the other repository's source."""
+    _register_gamma(release)
+    _invoke(["skills", "install", "alpha"])
+    _invoke(["skills", "install", "--repo", "acme/skills", "gamma"])
+    skills_dir = workspace.project / ".agents" / "skills"
+
+    result = _invoke(["skills", "remove", "gamma", "-y"])
+
+    assert result.exit_code == 0
+    assert not (skills_dir / "gamma").exists()
+    local_catalog = json.loads((skills_dir / LOCAL_CATALOG).read_text())
+    assert set(local_catalog["sources"]) == {GITHUB_REPO}
+
+
+def test_remove_prunes_legacy_catalog_when_last_skill_goes(release, workspace):
+    _invoke(["skills", "install", "alpha"])
+    skills_dir = workspace.project / ".agents" / "skills"
+    (skills_dir / LOCAL_CATALOG).unlink()
+    (skills_dir / "catalog.json").write_text(json.dumps({"skills": []}))
+
+    result = _invoke(["skills", "remove", "--all", "-y"])
+
+    assert result.exit_code == 0
+    assert not (skills_dir / "catalog.json").exists()
+    assert not (skills_dir / LOCAL_CATALOG).exists()
+
+
+def test_remove_unknown_id_reports_nothing_to_remove(release, workspace):
+    _invoke(["skills", "install", "alpha"])
+
+    result = _invoke(["skills", "remove", "beta", "-y"])
+
+    assert result.exit_code == 0
+    assert "Nothing to remove" in result.output
+    assert (workspace.project / ".agents" / "skills" / "alpha").is_dir()
+
+
+def test_remove_asks_for_confirmation(release, workspace):
+    _invoke(["skills", "install", "alpha"])
+    skill_dir = workspace.project / ".agents" / "skills" / "alpha"
+
+    result = _invoke(["skills", "remove", "alpha"], input="y\n")
+
+    assert result.exit_code == 0
+    assert "Removing" in result.output
+    assert not skill_dir.exists()
+
+
+def test_remove_declined_confirmation_keeps_skill(release, workspace):
+    _invoke(["skills", "install", "alpha"])
+    skill_dir = workspace.project / ".agents" / "skills" / "alpha"
+
+    result = _invoke(["skills", "remove", "alpha"], input="n\n")
+
+    assert result.exit_code == 0
+    assert skill_dir.is_dir()
+
+
+def test_update_skips_skill_absent_from_catalog(release, workspace):
+    """A skill dropped from its catalog is left untouched instead of failing."""
+    _invoke(["skills", "install", "alpha"])
+    release["catalog"]["skills"] = [
+        skill for skill in release["catalog"]["skills"] if skill["id"] != "alpha"
+    ]
+
+    result = _invoke(["skills", "update", "--all"])
+
+    assert result.exit_code == 0
+    assert "up to date" in result.output
+    assert (workspace.project / ".agents" / "skills" / "alpha" / "SKILL.md").is_file()
+
+
+def test_update_unknown_id_matches_nothing(release, workspace):
+    """Requesting an id that is not installed reports nothing to do."""
+    _invoke(["skills", "install", "alpha"])
+    release["urls"].clear()
+
+    result = _invoke(["skills", "update", "beta"])
+
+    assert result.exit_code == 0
+    assert "All skills are up to date." in result.output
+    assert release["urls"] == []
+
+
+def test_install_workflow_with_unknown_skill_errors(release, workspace):
+    release["catalog"]["workflows"][0]["includes"] = ["missing"]
+
+    result = _invoke(["skills", "install", "flow"])
+
+    assert result.exit_code != 0
+    assert "references unknown skill" in result.output
+
+
+# --------------------------------------------------------------------------- #
+# Install wizard: GitHub source step
+# --------------------------------------------------------------------------- #
+
+
+async def test_wizard_app_has_no_release_before_source_confirm(release):
+    app = ProbablSkillsInstaller(agent=(), default_global=False)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app.catalog is None
+        assert app.root is None
+        assert app.tag is None
+        assert app._selected_ids() == []
+        assert app.query_one("#repo", HelpInput).value == GITHUB_REPO
+        await pilot.press("escape")
+        await pilot.pause()
+
+    assert app.result is None
+    assert release["urls"] == []
+
+
+async def test_wizard_app_source_step_shows_help(release):
+    app = ProbablSkillsInstaller(agent=(), default_global=False)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("?")
+        await pilot.pause()
+        assert isinstance(app.screen, HelpScreen)
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.is_running is True
+
+
+async def test_wizard_app_fetch_failure_stays_on_source(release, monkeypatch):
+    def boom(repo):
+        raise OSError("network down")
+
+    monkeypatch.setattr(_install_app, "fetch_release", boom)
+
+    app = ProbablSkillsInstaller(agent=(), default_global=False)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        active = app.query_one("#wizard", TabbedContent).active
+        await pilot.press("escape")
+        await pilot.pause()
+
+    assert active == "step-source"
+    assert app.catalog is None
+
+
+async def test_wizard_app_reconfirming_same_repo_does_not_refetch(release):
+    app = ProbablSkillsInstaller(agent=(), default_global=False)
+    async with app.run_test() as pilot:
+        await _confirm_source(app, pilot)
+        release["urls"].clear()
+        await _back_to_source(app, pilot)
+        await _confirm_source(app, pilot)
+        await pilot.press("escape")
+        await pilot.pause()
+
+    assert release["urls"] == []
+
+
+async def test_wizard_app_blocks_tab_jump_before_source_confirm(release):
+    app = ProbablSkillsInstaller(agent=(), default_global=False)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.click("#--content-tab-step-scope")
+        await pilot.pause()
+        active = app.query_one("#wizard", TabbedContent).active
+        await pilot.press("escape")
+        await pilot.pause()
+
+    assert active == "step-source"
+
+
+async def test_wizard_app_switching_source_repo_replaces_skills(release):
+    """Confirming a new repository swaps the skill lists and cleans up."""
+    _register_gamma(release)
+
+    app = ProbablSkillsInstaller(agent=("cursor",), default_global=False)
+    async with app.run_test() as pilot:
+        await _confirm_source(app, pilot)
+        first_root = app.root
+        assert set(app.query_one("#sel-skills", SelectionList).selected) == set()
+
+        await _back_to_source(app, pilot)
+        await _confirm_source(app, pilot, "acme/skills")
+        skill_list = app.query_one("#sel-skills", SelectionList)
+        skill_list.select_all()
+        await pilot.pause()
+        selected = set(skill_list.selected)
+        second_root = app.root
+        await pilot.press("escape")
+        await pilot.pause()
+
+    assert selected == {"gamma"}
+    assert second_root != first_root
+    assert not first_root.exists()
+    assert app.result is None

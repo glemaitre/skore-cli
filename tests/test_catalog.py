@@ -99,6 +99,14 @@ def test_load_catalog_prefers_hidden_file(tmp_path, catalog_dict):
     assert _catalog.load_catalog(root) == hidden
 
 
+def test_load_catalog_without_any_catalog_file(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+
+    with pytest.raises(FileNotFoundError, match="No catalog file found"):
+        _catalog.load_catalog(root)
+
+
 def test_load_catalog_falls_back_to_catalog_json(tmp_path, catalog_dict):
     root = tmp_path / "repo"
     root.mkdir()

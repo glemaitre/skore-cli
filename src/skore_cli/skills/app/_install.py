@@ -245,12 +245,12 @@ class ProbablSkillsInstaller(App[None]):
         self._catalog = None
         self._repo = None
 
-    def _mount_skills(self, catalog: dict[str, Any]) -> None:
+    async def _mount_skills(self, catalog: dict[str, Any]) -> None:
         host = self.query_one("#skills-host", Vertical)
-        host.remove_children()
-        host.mount(SkillSelection(catalog, intro=_SKILLS_INTRO))
+        await host.remove_children()
+        await host.mount(SkillSelection(catalog, intro=_SKILLS_INTRO))
 
-    def _load_source(self) -> bool:
+    async def _load_source(self) -> bool:
         raw = self.query_one("#repo", HelpInput).value
         try:
             repo = normalize_github_repo(raw)
@@ -280,7 +280,7 @@ class ProbablSkillsInstaller(App[None]):
         self._tag = tag
         self._root = root
         self._catalog = catalog
-        self._mount_skills(catalog)
+        await self._mount_skills(catalog)
         return True
 
     def _finish(self) -> None:
@@ -293,11 +293,11 @@ class ProbablSkillsInstaller(App[None]):
         self.result = (self._selected_ids(), agent_names, global_, self._repo)
         self.exit()
 
-    def action_confirm(self) -> None:
+    async def action_confirm(self) -> None:
         wizard = self.query_one("#wizard", TabbedContent)
         active = wizard.active
         if active == "step-source":
-            if not self._load_source():
+            if not await self._load_source():
                 return
             wizard.active = "step-skills"
             self._focus_active_step()
