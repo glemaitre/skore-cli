@@ -79,7 +79,12 @@ def _manage_targets(agent: tuple[str, ...], *, global_: bool) -> list[tuple[str,
     installed into any client directory remain discoverable and manageable.
     """
     agent_names = list(agent) if agent else SKILL_AGENT_NAMES
-    return resolve_targets(agent_names, global_=global_)
+    try:
+        return resolve_targets(
+            agent_names, global_=global_, skip_missing=not agent
+        )
+    except ValueError as error:
+        raise click.ClickException(str(error)) from error
 
 
 @contextmanager
@@ -442,7 +447,10 @@ def _copy_selected_skills(
     catalog: dict[str, Any],
 ) -> int:
     """Copy ``selected`` skills into the resolved targets and persist catalogs."""
-    targets = resolve_targets(agent_names, global_=global_)
+    try:
+        targets = resolve_targets(agent_names, global_=global_)
+    except ValueError as error:
+        raise click.ClickException(str(error)) from error
 
     tree = Tree(f"Installing {len(selected)} skill(s) from {repo} release {tag}")
     for _, target in targets:

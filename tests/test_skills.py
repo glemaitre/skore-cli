@@ -153,6 +153,32 @@ def test_install_explicit_agent(release, workspace):
     assert not (workspace.project / ".agents").exists()
 
 
+def test_install_bob_agent(release, workspace):
+    result = _invoke(["skills", "install", "alpha", "-a", "bob"])
+
+    assert result.exit_code == 0
+    assert (workspace.project / ".bob" / "skills" / "alpha").is_dir()
+    assert not (workspace.project / ".agents").exists()
+
+
+def test_install_windsurf_global(release, workspace):
+    result = _invoke(["skills", "install", "alpha", "-a", "windsurf", "-g"])
+
+    assert result.exit_code == 0
+    assert (workspace.home / ".codeium" / "windsurf" / "skills" / "alpha").is_dir()
+    assert not (workspace.project / ".windsurf").exists()
+
+
+def test_install_copilot_global_errors(release, workspace):
+    result = _invoke(["skills", "install", "alpha", "-a", "github-copilot", "-g"])
+
+    assert result.exit_code != 0
+    assert "GitHub Copilot has no user-level skills directory" in _plain_output(
+        result.output
+    )
+    assert not (workspace.home / ".github").exists()
+
+
 def test_install_global_scope(release, workspace):
     result = _invoke(["skills", "install", "alpha", "-g"])
 
@@ -592,6 +618,23 @@ def test_list_includes_non_default_agents(release, workspace):
 
     assert result.exit_code == 0
     assert "alpha" in result.output
+
+
+def test_list_global_skips_agents_without_user_directory(release, workspace):
+    """A global scan of every agent skips Copilot instead of failing."""
+    result = _invoke(["skills", "list", "-g"])
+
+    assert result.exit_code == 0
+    assert "No skills installed" in result.output
+
+
+def test_list_copilot_global_errors(release, workspace):
+    result = _invoke(["skills", "list", "-a", "github-copilot", "-g"])
+
+    assert result.exit_code != 0
+    assert "GitHub Copilot has no user-level skills directory" in _plain_output(
+        result.output
+    )
 
 
 def test_list_agent_restricts_scan(release, workspace):
