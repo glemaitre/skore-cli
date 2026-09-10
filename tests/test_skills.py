@@ -66,7 +66,17 @@ def test_install_skill_project(release, workspace):
     assert (skill_dir / "SKILL.md").is_file()
 
     sidecar = json.loads((skill_dir / SIDECAR).read_text())
-    assert sidecar == {"id": "alpha", "release": "0.1.0", "hash": "hash-alpha-1"}
+    assert sidecar == {
+        "id": "alpha",
+        "release": "0.1.0",
+        "hash": "hash-alpha-1",
+        "repository": "probabl-ai/skills",
+    }
+    local_catalog = json.loads(
+        (workspace.project / ".agents" / "skills" / ".catalog.json").read_text()
+    )
+    assert "probabl-ai/skills" in local_catalog["sources"]
+    assert local_catalog["sources"]["probabl-ai/skills"]["release"] == "0.1.0"
 
 
 def test_install_workflow_expands_to_skills(release, workspace):
@@ -207,7 +217,7 @@ def _fake_app(result):
 
 def _fake_manage_picker(result):
     class _FakePicker:
-        def __init__(self, skill_ids, *, title):
+        def __init__(self, skill_ids, *, title, sources=None):
             self.result = result
 
         def run(self):
@@ -387,6 +397,7 @@ def test_list_installed(release, workspace):
 
     assert result.exit_code == 0
     assert "alpha" in result.output
+    assert "probabl-ai/skills" in result.output
 
 
 def test_list_when_empty(release, workspace):
@@ -424,6 +435,7 @@ def test_update_reinstalls_changed_skill(release, workspace):
 
     assert result.exit_code == 0
     assert "updated" in result.output
+    assert "probabl-ai/skills" in result.output
 
     sidecar = json.loads(
         (workspace.project / ".agents" / "skills" / "alpha" / SIDECAR).read_text()
@@ -450,6 +462,7 @@ def test_update_when_up_to_date(release, workspace):
 
     assert result.exit_code == 0
     assert "up to date" in result.output
+    assert "probabl-ai/skills" in result.output
 
 
 def test_update_without_ids_errors(release, workspace):
@@ -486,6 +499,7 @@ def test_remove_skill(release, workspace):
 
     assert result.exit_code == 0
     assert not skill_dir.exists()
+    assert not (workspace.project / ".agents" / "skills" / ".catalog.json").exists()
 
 
 def test_remove_all_removes_every_skill(release, workspace):
@@ -499,6 +513,7 @@ def test_remove_all_removes_every_skill(release, workspace):
     assert result.exit_code == 0
     assert not (skills_dir / "alpha").exists()
     assert not (skills_dir / "beta").exists()
+    assert not (skills_dir / ".catalog.json").exists()
 
 
 def test_remove_without_ids_errors(release, workspace):
@@ -525,7 +540,7 @@ def test_remove_non_default_agent(release, workspace):
 def test_fetch_failure_reports_clean_error(workspace, monkeypatch):
     """Network/parse failures surface as a clean error, not a raw traceback."""
 
-    def boom():
+    def boom(*args, **kwargs):
         raise OSError("network down")
 
     monkeypatch.setattr(_skills, "fetch_release", boom)
@@ -703,3 +718,193 @@ def test_resolve_agent_names_explicit_overrides_detection(monkeypatch):
 def test_resolve_agent_names_falls_back_when_no_detection(monkeypatch):
     _clear_agent_envs(monkeypatch)
     assert _skills._resolve_agent_names(()) == ["agents"]
+
+
+def test_install_custom_repo(release, workspace):
+    other = {
+        "skills": [
+            {
+                "id": "gamma",
+                "path": "skills/gamma",
+                "title": "Gamma",
+                "summary": "The gamma skill",
+                "category": "tooling",
+                "hash": "hash-gamma-1",
+            }
+        ],
+        "workflows": [],
+    }
+    release["by_repo"]["acme/skills"] = {"tag": "9.0.0", "catalog": other}
+
+    result = _invoke(["skills", "install", "--repo", "acme/skills", "gamma"])
+
+    assert result.exit_code == 0
+    skill_dir = workspace.project / ".agents" / "skills" / "gamma"
+    sidecar = json.loads((skill_dir / SIDECAR).read_text())
+    assert sidecar == {
+        "id": "gamma",
+        "release": "9.0.0",
+        "hash": "hash-gamma-1",
+        "repository": "acme/skills",
+    }
+    local_catalog = json.loads(
+        (workspace.project / ".agents" / "skills" / ".catalog.json").read_text()
+    )
+    assert set(local_catalog["sources"]) == {"acme/skills"}
+    assert any("/repos/acme/skills/" in url for url in release["urls"])
+
+
+def test_list_shows_custom_repo_source(release, workspace):
+    other = {
+        "skills": [
+            {
+                "id": "gamma",
+                "path": "skills/gamma",
+                "title": "Gamma",
+                "summary": "The gamma skill",
+                "category": "tooling",
+                "hash": "hash-gamma-1",
+            }
+        ],
+        "workflows": [],
+    }
+    release["by_repo"]["acme/skills"] = {"tag": "9.0.0", "catalog": other}
+    _invoke(["skills", "install", "--repo", "acme/skills", "gamma"])
+
+    result = _invoke(["skills", "list"])
+
+    assert result.exit_code == 0
+    assert "gamma" in result.output
+    assert "acme/skills" in result.output
+
+
+def test_update_uses_stored_repository(release, workspace):
+    other = {
+        "skills": [
+            {
+                "id": "gamma",
+                "path": "skills/gamma",
+                "title": "Gamma",
+                "summary": "The gamma skill",
+                "category": "tooling",
+                "hash": "hash-gamma-1",
+            }
+        ],
+        "workflows": [],
+    }
+    release["by_repo"]["acme/skills"] = {"tag": "9.0.0", "catalog": other}
+    _invoke(["skills", "install", "--repo", "acme/skills", "gamma"])
+    release["urls"].clear()
+    other["skills"][0]["hash"] = "hash-gamma-2"
+
+    result = _invoke(["skills", "update", "--all"])
+
+    assert result.exit_code == 0
+    assert "updated" in result.output
+    assert "acme/skills" in result.output
+    assert any("/repos/acme/skills/" in url for url in release["urls"])
+    assert not any("/repos/probabl-ai/skills/" in url for url in release["urls"])
+    sidecar = json.loads(
+        (workspace.project / ".agents" / "skills" / "gamma" / SIDECAR).read_text()
+    )
+    assert sidecar["hash"] == "hash-gamma-2"
+    assert sidecar["repository"] == "acme/skills"
+
+
+def test_update_mixed_repos_fetches_each_origin(release, workspace):
+    other = {
+        "skills": [
+            {
+                "id": "gamma",
+                "path": "skills/gamma",
+                "title": "Gamma",
+                "summary": "The gamma skill",
+                "category": "tooling",
+                "hash": "hash-gamma-1",
+            }
+        ],
+        "workflows": [],
+    }
+    release["by_repo"]["acme/skills"] = {"tag": "9.0.0", "catalog": other}
+    _invoke(["skills", "install", "alpha"])
+    _invoke(["skills", "install", "--repo", "acme/skills", "gamma"])
+    release["catalog"]["skills"][0]["hash"] = "hash-alpha-2"
+    other["skills"][0]["hash"] = "hash-gamma-2"
+    release["urls"].clear()
+
+    result = _invoke(["skills", "update", "--all"])
+
+    assert result.exit_code == 0
+    assert "alpha" in result.output
+    assert "gamma" in result.output
+    assert any("/repos/probabl-ai/skills/" in url for url in release["urls"])
+    assert any("/repos/acme/skills/" in url for url in release["urls"])
+    local_catalog = json.loads(
+        (workspace.project / ".agents" / "skills" / ".catalog.json").read_text()
+    )
+    assert set(local_catalog["sources"]) == {"probabl-ai/skills", "acme/skills"}
+
+
+def test_update_legacy_sidecar_defaults_to_official_repo(release, workspace):
+    _invoke(["skills", "install", "alpha"])
+    sidecar_path = (
+        workspace.project / ".agents" / "skills" / "alpha" / SIDECAR
+    )
+    payload = json.loads(sidecar_path.read_text())
+    del payload["repository"]
+    sidecar_path.write_text(json.dumps(payload))
+    release["catalog"]["skills"][0]["hash"] = "hash-alpha-2"
+    release["urls"].clear()
+
+    result = _invoke(["skills", "update", "--all"])
+
+    assert result.exit_code == 0
+    assert "probabl-ai/skills" in result.output
+    assert any("/repos/probabl-ai/skills/" in url for url in release["urls"])
+    sidecar = json.loads(sidecar_path.read_text())
+    assert sidecar["repository"] == "probabl-ai/skills"
+    assert sidecar["hash"] == "hash-alpha-2"
+
+
+def test_update_migrates_legacy_sidecar_without_hash_change(release, workspace):
+    _invoke(["skills", "install", "alpha"])
+    skills_dir = workspace.project / ".agents" / "skills"
+    sidecar_path = skills_dir / "alpha" / SIDECAR
+    payload = json.loads(sidecar_path.read_text())
+    del payload["repository"]
+    sidecar_path.write_text(json.dumps(payload))
+    (skills_dir / ".catalog.json").unlink()
+
+    result = _invoke(["skills", "update", "--all"])
+
+    assert result.exit_code == 0
+    assert "up to date" in result.output
+    sidecar = json.loads(sidecar_path.read_text())
+    assert sidecar["repository"] == "probabl-ai/skills"
+    assert sidecar["hash"] == "hash-alpha-1"
+    local_catalog = json.loads((skills_dir / ".catalog.json").read_text())
+    assert "probabl-ai/skills" in local_catalog["sources"]
+
+
+def test_update_migrates_legacy_catalog_json(release, workspace):
+    _invoke(["skills", "install", "alpha"])
+    skills_dir = workspace.project / ".agents" / "skills"
+    hidden = skills_dir / ".catalog.json"
+    snapshot = json.loads(hidden.read_text())
+    single_repo = snapshot["sources"]["probabl-ai/skills"]
+    single_repo.pop("repository", None)
+    (skills_dir / "catalog.json").write_text(json.dumps(single_repo, indent=2))
+    hidden.unlink()
+    sidecar_path = skills_dir / "alpha" / SIDECAR
+    payload = json.loads(sidecar_path.read_text())
+    del payload["repository"]
+    sidecar_path.write_text(json.dumps(payload))
+
+    result = _invoke(["skills", "update", "--all"])
+
+    assert result.exit_code == 0
+    assert not (skills_dir / "catalog.json").exists()
+    local_catalog = json.loads(hidden.read_text())
+    assert set(local_catalog["sources"]) == {"probabl-ai/skills"}
+    sidecar = json.loads(sidecar_path.read_text())
+    assert sidecar["repository"] == "probabl-ai/skills"
