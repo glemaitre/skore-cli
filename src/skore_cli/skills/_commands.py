@@ -80,9 +80,7 @@ def _manage_targets(agent: tuple[str, ...], *, global_: bool) -> list[tuple[str,
     """
     agent_names = list(agent) if agent else SKILL_AGENT_NAMES
     try:
-        return resolve_targets(
-            agent_names, global_=global_, skip_missing=not agent
-        )
+        return resolve_targets(agent_names, global_=global_, skip_missing=not agent)
     except ValueError as error:
         raise click.ClickException(str(error)) from error
 

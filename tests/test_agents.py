@@ -162,9 +162,7 @@ def test_resolve_targets_bob_and_bob_ide_deduplicate(tmp_path):
     home.mkdir()
     project.mkdir()
 
-    targets = resolve_targets(
-        ["bob", "bob-ide"], global_=False, home=home, cwd=project
-    )
+    targets = resolve_targets(["bob", "bob-ide"], global_=False, home=home, cwd=project)
 
     assert targets == [("bob", project / ".bob" / "skills")]
 
@@ -175,9 +173,7 @@ def test_resolve_targets_copilot_project_only(tmp_path):
     home.mkdir()
     project.mkdir()
 
-    local = resolve_targets(
-        ["github-copilot"], global_=False, home=home, cwd=project
-    )
+    local = resolve_targets(["github-copilot"], global_=False, home=home, cwd=project)
 
     assert local == [("github-copilot", project / ".github" / "skills")]
     with pytest.raises(ValueError, match="GitHub Copilot has no user-level"):
