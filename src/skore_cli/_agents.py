@@ -689,6 +689,30 @@ AGENTS: dict[str, Agent] = {
         user_skills_dir=".gemini/skills",
         project_skills_dir=".agents/skills",
     ),
+    "windsurf": Agent(
+        name="windsurf",
+        label="Windsurf",
+        user_skills_dir=".codeium/windsurf/skills",
+        project_skills_dir=".windsurf/skills",
+    ),
+    "cline": Agent(
+        name="cline",
+        label="Cline",
+        user_skills_dir=".cline/skills",
+        project_skills_dir=".cline/skills",
+    ),
+    "roo": Agent(
+        name="roo",
+        label="Roo Code",
+        user_skills_dir=".roo/skills",
+        project_skills_dir=".roo/skills",
+    ),
+    "amp": Agent(
+        name="amp",
+        label="Amp",
+        user_skills_dir=".config/agents/skills",
+        project_skills_dir=".agents/skills",
+    ),
     "opencode": Agent(
         name="opencode",
         label="OpenCode",
@@ -712,6 +736,7 @@ AGENTS: dict[str, Agent] = {
     "github-copilot": Agent(
         name="github-copilot",
         label="GitHub Copilot",
+        project_skills_dir=".github/skills",
         harness_name="copilot",
         harness_binaries=COPILOT_BINARIES,
         configure=_configure_copilot,
@@ -720,6 +745,8 @@ AGENTS: dict[str, Agent] = {
     "bob": Agent(
         name="bob",
         label="Bob Shell",
+        user_skills_dir=".bob/skills",
+        project_skills_dir=".bob/skills",
         harness_name="bob",
         harness_label="Bob Shell",
         configure=_configure_bob_shell,
@@ -728,6 +755,8 @@ AGENTS: dict[str, Agent] = {
     "bob-ide": Agent(
         name="bob-ide",
         label="Bob IDE",
+        user_skills_dir=".bob/skills",
+        project_skills_dir=".bob/skills",
         harness_name="bob-ide",
         harness_label="Bob IDE",
         harness_binaries=("bobide",),
@@ -738,7 +767,9 @@ AGENTS: dict[str, Agent] = {
 }
 
 SKILL_AGENT_NAMES = [
-    agent.name for agent in AGENTS.values() if agent.project_skills_dir is not None
+    agent.name
+    for agent in AGENTS.values()
+    if agent.project_skills_dir is not None or agent.user_skills_dir is not None
 ]
 HARNESS_NAMES = [
     agent.harness_name for agent in AGENTS.values() if agent.harness_name is not None
@@ -782,9 +813,17 @@ def is_non_interactive() -> bool:
 def resolve_skill_agent(agent: Agent) -> Agent:
     """Return the registry row that owns ``agent``'s skills directories."""
     target = AGENTS[agent.skill_target] if agent.skill_target else agent
-    if target.user_skills_dir is None or target.project_skills_dir is None:
+    if target.user_skills_dir is None and target.project_skills_dir is None:
         raise ValueError(f"{agent.name} has no skills target")
     return target
+
+
+def _missing_skills_directory_message(labels: list[str], *, global_: bool) -> str:
+    """Return an error for agents that have no directory in the given scope."""
+    scope = "user-level" if global_ else "project"
+    if len(labels) == 1:
+        return f"{labels[0]} has no {scope} skills directory."
+    return f"{', '.join(labels)} have no {scope} skills directories."
 
 
 def resolve_targets(
@@ -793,22 +832,37 @@ def resolve_targets(
     global_: bool,
     home: Path | None = None,
     cwd: Path | None = None,
+    skip_missing: bool = False,
 ) -> list[tuple[str, Path]]:
-    """Resolve skill agent names to unique global or project directories."""
+    """Resolve skill agent names to unique global or project directories.
+
+    Parameters
+    ----------
+    skip_missing : bool, default=False
+        When True, agents with no directory for the requested scope are
+        skipped. When False, those agents raise ``ValueError``.
+    """
     home = home or Path.home()
     cwd = cwd or Path.cwd()
 
     targets: list[tuple[str, Path]] = []
     seen: set[Path] = set()
+    missing: list[str] = []
     for name in agent_names:
         agent = resolve_skill_agent(AGENTS[name])
         subdir = agent.user_skills_dir if global_ else agent.project_skills_dir
-        assert subdir is not None
+        if subdir is None:
+            if skip_missing:
+                continue
+            missing.append(agent.label)
+            continue
         path = (home if global_ else cwd) / subdir
         if path in seen:
             continue
         seen.add(path)
         targets.append((name, path))
+    if missing:
+        raise ValueError(_missing_skills_directory_message(missing, global_=global_))
     return targets
 
 
