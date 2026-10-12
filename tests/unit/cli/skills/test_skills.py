@@ -7,11 +7,13 @@ from textual.widgets import SelectionList, TabbedContent
 from skore_cli import cli
 from skore_cli.app._help import HelpInput, HelpScreen
 from skore_cli.skills import _commands as _skills
+from skore_cli.skills import _release as skills_release
+from skore_cli.skills import _render
 from skore_cli.skills._catalog import GITHUB_REPO, fetch_release
 from skore_cli.skills._commands import (
     ProbablSkillsInstaller,
 )
-from skore_cli.skills.app import _install as _install_app
+from skore_cli.skills._store import envelope_from_catalog_data
 from skore_cli.skills.app._widgets import AutoRadioSet
 
 SIDECAR = ".skore-skill.json"
@@ -211,12 +213,93 @@ def test_render_catalog_interactive(monkeypatch):
         "skills": [{"id": "alpha", "summary": "A skill"}],
     }
 
-    monkeypatch.setattr(_skills, "is_non_interactive", lambda: False)
-    monkeypatch.setattr(_skills.console, "print", rendered.append)
+    monkeypatch.setattr(_render, "is_non_interactive", lambda: False)
+    monkeypatch.setattr(_render.console, "print", rendered.append)
 
-    _skills._render_catalog(catalog)
+    _render.render_catalog(catalog)
 
     assert [table.title for table in rendered] == ["Workflows (recommended)", "Skills"]
+
+
+def test_render_catalog_filters_by_id_and_query(monkeypatch):
+    catalog = {
+        "workflows": [{"id": "flow", "summary": "A workflow", "title": "Flow"}],
+        "skills": [
+            {
+                "id": "alpha",
+                "title": "Alpha",
+                "summary": "First skill",
+                "category": "tooling",
+            },
+            {
+                "id": "beta",
+                "title": "Beta",
+                "summary": "Second skill",
+                "category": "reporting",
+            },
+        ],
+    }
+    rendered = []
+    monkeypatch.setattr(_render, "is_non_interactive", lambda: False)
+    monkeypatch.setattr(_render.console, "print", rendered.append)
+
+    _render.render_catalog(catalog, ids=["alpha"])
+    assert list(rendered[-1].columns[0].cells) == ["alpha"]
+
+    rendered.clear()
+    _render.render_catalog(catalog, query="reporting")
+    assert list(rendered[-1].columns[0].cells) == ["beta"]
+
+    rendered.clear()
+    _render.render_catalog(catalog, query="missing")
+    assert rendered == ["No skill or workflow matches the query."]
+
+
+def test_render_catalog_plain_text(monkeypatch):
+    rendered = []
+    monkeypatch.setattr(_render, "is_non_interactive", lambda: True)
+    monkeypatch.setattr(_render.console, "print", rendered.append)
+    catalog = {
+        "workflows": [{"id": "flow", "summary": "A workflow"}],
+        "skills": [{"id": "alpha", "summary": "A skill"}],
+    }
+
+    _render.render_catalog(catalog)
+    assert rendered[0] == "Workflows:"
+    assert any(line == "Skills:" for line in rendered)
+
+    rendered.clear()
+    _render.render_catalog({"skills": catalog["skills"]})
+    assert rendered[0] == "Skills:"
+    assert "" not in rendered
+
+    rendered.clear()
+    _render.render_catalog({"workflows": [], "skills": []})
+    assert rendered == ["No skill or workflow matches the query."]
+
+
+def test_interactive_install_cleans_up_when_dismissed(monkeypatch, tmp_path):
+    extracted = tmp_path / "extract" / "repo"
+    extracted.mkdir(parents=True)
+
+    class _Dismissed:
+        result = None
+
+        def __init__(self, **kwargs):
+            self.root = extracted
+
+        def run(self):
+            return None
+
+    monkeypatch.setattr(_skills, "ProbablSkillsInstaller", _Dismissed)
+
+    assert (
+        _skills._interactive_install_options(
+            agent=(), default_global=False, default_repo="owner/name"
+        )
+        is None
+    )
+    assert not extracted.exists()
 
 
 def test_install_global_without_selection_errors(release, workspace):
@@ -594,6 +677,17 @@ async def test_wizard_app_loads_custom_repo(release):
     assert app.tag == "9.0.0"
 
 
+def test_list_reports_unreadable_sidecar(workspace):
+    skill = workspace.project / ".agents" / "skills" / "alpha"
+    skill.mkdir(parents=True)
+    (skill / SIDECAR).write_text("[]\n")
+
+    result = _invoke(["skills", "list"])
+
+    assert result.exit_code != 0
+    assert "object with an id" in result.output
+
+
 def test_list_installed(release, workspace):
     _invoke(["skills", "install", "alpha"])
     result = _invoke(["skills", "list"])
@@ -763,7 +857,7 @@ def test_fetch_failure_reports_clean_error(workspace, monkeypatch):
     def boom(*args, **kwargs):
         raise OSError("network down")
 
-    monkeypatch.setattr(_skills, "fetch_release", boom)
+    monkeypatch.setattr(skills_release, "fetch_release", boom)
 
     result = _invoke(["skills", "install", "nonexistent"])
 
@@ -791,9 +885,11 @@ async def test_auto_radio_set_selects_on_arrow(release):
         assert radio.pressed_index == 0
         await pilot.press("down")
         await pilot.pause()
+        await pilot.press("up")
+        await pilot.pause()
         pressed_index = radio.pressed_index
 
-    assert pressed_index == 1
+    assert pressed_index == 0
 
 
 def test_update_interactive_selection(release, workspace, monkeypatch):
@@ -1144,13 +1240,13 @@ def test_update_migrates_legacy_catalog_json(release, workspace):
 
 def test_envelope_from_catalog_data_wraps_non_mapping():
     """A catalog file that is not a mapping still yields a default source."""
-    envelope = _skills._envelope_from_catalog_data(["not", "a", "mapping"])
+    envelope = envelope_from_catalog_data(["not", "a", "mapping"])
 
     assert envelope == {"sources": {GITHUB_REPO: ["not", "a", "mapping"]}}
 
 
 def test_envelope_from_catalog_data_honors_declared_repository():
-    envelope = _skills._envelope_from_catalog_data({"repository": "acme/skills"})
+    envelope = envelope_from_catalog_data({"repository": "acme/skills"})
 
     assert set(envelope["sources"]) == {"acme/skills"}
 
@@ -1161,7 +1257,7 @@ def test_installed_ignores_unmanaged_entries(release, workspace):
     skills_dir = workspace.project / ".agents" / "skills"
     (skills_dir / "handwritten").mkdir()
 
-    assert [sidecar["id"] for _, sidecar in _skills._installed(skills_dir)] == ["alpha"]
+    assert [sidecar["id"] for _, sidecar in _skills.installed(skills_dir)] == ["alpha"]
 
 
 # --------------------------------------------------------------------------- #
@@ -1238,7 +1334,8 @@ def test_update_skips_skill_absent_from_catalog(release, workspace):
     result = _invoke(["skills", "update", "--all"])
 
     assert result.exit_code == 0
-    assert "up to date" in result.output
+    assert "not in the latest release" in result.output
+    assert "up to date" not in result.output
     assert (workspace.project / ".agents" / "skills" / "alpha" / "SKILL.md").is_file()
 
 
@@ -1300,7 +1397,7 @@ async def test_wizard_app_fetch_failure_stays_on_source(release, monkeypatch):
     def boom(repo):
         raise OSError("network down")
 
-    monkeypatch.setattr(_install_app, "fetch_release", boom)
+    monkeypatch.setattr(skills_release, "fetch_release", boom)
 
     app = ProbablSkillsInstaller(agent=(), default_global=False)
     async with app.run_test() as pilot:

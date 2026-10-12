@@ -15,16 +15,19 @@ from skore._plugins.hub.authentication import login as hub_login
 from skore._plugins.hub.authentication.registry import distant
 from skore._plugins.hub.authentication.registry.distant import Workspace
 
-from skore_cli import _agents
-from skore_cli._agents import AGENTS, DEFAULT_MODEL_ID, HARNESS_NAMES, HarnessContext
+from skore_cli._agents import AGENTS, DEFAULT_MODEL_ID, HARNESS_NAMES
+from skore_cli._credentials import HubError
+from skore_cli._project import (
+    SKORE_FILENAME,
+    SkoreConfig,
+    SkoreConfigError,
+    ensure_gitignore_entry,
+)
 from skore_cli.agent import _commands
 from skore_cli.agent import app as _agent_app
 from skore_cli.agent._commands import agent
-from skore_cli.agent._skore_file import (
-    SKORE_FILENAME,
-    SkoreConfig,
-    ensure_gitignore_entry,
-)
+from skore_cli.harnesses import _bob, _claude, _process
+from skore_cli.harnesses._context import HarnessContext
 
 _ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -37,7 +40,7 @@ def _plain_output(output: str) -> str:
 def _mock_harness_on_path(monkeypatch, name: str) -> None:
     """Pretend the harness binary is installed without relying on the real PATH."""
     monkeypatch.setattr(
-        _agents.shutil,
+        _process.shutil,
         "which",
         lambda cmd: f"/usr/bin/{cmd}" if cmd == name else None,
     )
@@ -108,16 +111,18 @@ def test_skore_config_round_trip(tmp_path):
     assert loaded == config
 
 
-def test_skore_config_load_sets_hub_uri_env(tmp_path, monkeypatch):
+def test_skore_config_load_does_not_set_hub_uri_env(tmp_path, monkeypatch):
     monkeypatch.delenv("SKORE_HUB_URI", raising=False)
     _write_skore(tmp_path)
-    SkoreConfig.load(tmp_path)
-    assert os.environ["SKORE_HUB_URI"] == "http://hub.test"
+    loaded = SkoreConfig.load(tmp_path)
+    assert loaded is not None
+    assert "SKORE_HUB_URI" not in os.environ
 
 
-def test_skore_config_load_invalid_returns_none(tmp_path):
+def test_skore_config_load_invalid_raises(tmp_path):
     (tmp_path / SKORE_FILENAME).write_text("{ not json")
-    assert SkoreConfig.load(tmp_path) is None
+    with pytest.raises(SkoreConfigError, match="could not parse"):
+        SkoreConfig.load(tmp_path)
 
 
 def test_skore_config_load_normalizes_legacy_claude_code_harness(tmp_path):
@@ -131,11 +136,42 @@ def test_skore_config_load_returns_none_when_absent(tmp_path):
     assert SkoreConfig.load(tmp_path) is None
 
 
-def test_skore_config_load_returns_none_when_required_field_missing(tmp_path):
+def test_skore_config_load_rejects_missing_required_field(tmp_path):
     (tmp_path / SKORE_FILENAME).write_text(
         json.dumps({"hub_url": "http://hub.test"}) + "\n"
     )
-    assert SkoreConfig.load(tmp_path) is None
+    with pytest.raises(SkoreConfigError, match="missing hub_url"):
+        SkoreConfig.load(tmp_path)
+
+
+def test_skore_config_load_rejects_non_object(tmp_path):
+    (tmp_path / SKORE_FILENAME).write_text("[]\n")
+    with pytest.raises(SkoreConfigError, match="JSON object"):
+        SkoreConfig.load(tmp_path)
+
+
+def test_skore_config_load_rejects_non_integer_workspace_id(tmp_path):
+    (tmp_path / SKORE_FILENAME).write_text(
+        json.dumps(
+            {"hub_url": "http://hub.test", "workspace": "ws-1", "workspace_id": "nope"}
+        )
+    )
+    with pytest.raises(SkoreConfigError, match="not an integer"):
+        SkoreConfig.load(tmp_path)
+
+
+def test_agent_refuses_unreadable_skore_without_replacing_it(tmp_path, monkeypatch):
+    original = "{ not json"
+    (tmp_path / SKORE_FILENAME).write_text(original)
+    monkeypatch.setattr(
+        hub_login, "login", lambda **kwargs: (_ for _ in ()).throw(AssertionError)
+    )
+
+    result = CliRunner().invoke(agent, ["--workspace", str(tmp_path)])
+
+    assert result.exit_code != 0
+    assert "could not parse" in result.output
+    assert (tmp_path / SKORE_FILENAME).read_text() == original
 
 
 def test_skore_config_save_omits_the_api_key(tmp_path):
@@ -215,6 +251,66 @@ def test_agent_invalid_harness_lists_all_supported_harnesses(tmp_path):
     output = _plain_output(result.output)
     for name in HARNESS_NAMES:
         assert name in output
+
+
+def test_agent_reports_hub_errors(tmp_path, monkeypatch):
+    _write_skore(tmp_path)
+
+    def boom(**kwargs):
+        raise HubError("mint failed")
+
+    monkeypatch.setattr(_commands, "require_workspace_api_key", boom)
+
+    result = CliRunner().invoke(
+        agent, ["--workspace", str(tmp_path), "--harness", "opencode"]
+    )
+
+    assert result.exit_code != 0
+    assert "mint failed" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_agent_reports_configure_errors(tmp_path, monkeypatch):
+    _write_skore(tmp_path, harness="opencode")
+
+    def boom(ctx):
+        raise RuntimeError("configure broke")
+
+    monkeypatch.setattr(
+        _commands,
+        "get_harness",
+        lambda name: SimpleNamespace(
+            harness_name=name,
+            harness_display_name="OpenCode",
+            configure=boom,
+        ),
+    )
+
+    result = CliRunner().invoke(
+        agent, ["--workspace", str(tmp_path), "--harness", "opencode"]
+    )
+
+    assert result.exit_code != 0
+    assert "configure broke" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_agent_reports_launch_errors(tmp_path, monkeypatch):
+    _write_skore(tmp_path, harness="opencode")
+    _mock_harness_on_path(monkeypatch, "opencode")
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("launch broke")
+
+    monkeypatch.setattr(_commands, "launch_harness", boom)
+
+    result = CliRunner().invoke(
+        agent, ["--workspace", str(tmp_path), "--harness", "opencode"]
+    )
+
+    assert result.exit_code != 0
+    assert "launch broke" in result.output
+    assert "Traceback" not in result.output
 
 
 def test_agent_uses_existing_skore_config(tmp_path, monkeypatch):
@@ -465,15 +561,15 @@ def test_agent_saves_claude_plugin_ide(tmp_path, monkeypatch):
     (cursor / "anthropic.claude-code-1.0.0").mkdir(parents=True)
     (vscode / "anthropic.claude-code-1.0.0").mkdir(parents=True)
     monkeypatch.setattr(
-        _agents,
+        _claude,
         "ide_extension_hosts",
         lambda: (
             ("cursor", cursor, "cursor"),
             ("code", vscode, "vscode"),
         ),
     )
-    monkeypatch.setattr(_agents, "is_non_interactive", lambda: False)
-    monkeypatch.setattr(_agents, "_prompt_ide", lambda options: "cursor")
+    monkeypatch.setattr(_claude, "is_non_interactive", lambda: False)
+    monkeypatch.setattr(_claude, "_prompt_ide", lambda options: "cursor")
     _stub_login(monkeypatch)
     _stub_identity(monkeypatch, [_membership()])
     monkeypatch.setattr(
@@ -498,7 +594,7 @@ def test_agent_claude_plugin_ide_flag_skips_the_menu(tmp_path, monkeypatch):
     (cursor / "anthropic.claude-code-1.0.0").mkdir(parents=True)
     (vscode / "anthropic.claude-code-1.0.0").mkdir(parents=True)
     monkeypatch.setattr(
-        _agents,
+        _claude,
         "ide_extension_hosts",
         lambda: (
             ("cursor", cursor, "cursor"),
@@ -507,7 +603,7 @@ def test_agent_claude_plugin_ide_flag_skips_the_menu(tmp_path, monkeypatch):
     )
     prompted: list[object] = []
     monkeypatch.setattr(
-        _agents, "_prompt_ide", lambda options: prompted.append(options)
+        _claude, "_prompt_ide", lambda options: prompted.append(options)
     )
     _stub_login(monkeypatch)
     _stub_identity(monkeypatch, [_membership()])
@@ -535,7 +631,7 @@ def test_agent_reuses_saved_claude_plugin_ide(tmp_path, monkeypatch):
     (vscode / "anthropic.claude-code-1.0.0").mkdir(parents=True)
     _write_skore(tmp_path, harness="claude-plugin-cursor")
     monkeypatch.setattr(
-        _agents,
+        _claude,
         "ide_extension_hosts",
         lambda: (
             ("cursor", cursor, "cursor"),
@@ -544,7 +640,7 @@ def test_agent_reuses_saved_claude_plugin_ide(tmp_path, monkeypatch):
     )
     prompted: list[object] = []
     monkeypatch.setattr(
-        _agents, "_prompt_ide", lambda options: prompted.append(options)
+        _claude, "_prompt_ide", lambda options: prompted.append(options)
     )
     launched: list[str | None] = []
     monkeypatch.setattr(
@@ -594,7 +690,7 @@ def test_agent_bob_ide_first_run_on_linux_writes_mcp_config(
     the run must detect it and still write ``.bob/mcp.json`` after saving
     ``.skore`` (skore-hub#1894). ``--harness bobide`` is accepted as an alias
     and stored under the canonical ``bob-ide`` name."""
-    monkeypatch.setattr(_agents.sys, "platform", "linux")
+    monkeypatch.setattr(_process.sys, "platform", "linux")
     _mock_harness_on_path(monkeypatch, "bobide")
     _stub_login(monkeypatch)
     _stub_identity(monkeypatch, [_membership()])
@@ -641,7 +737,7 @@ def test_agent_generates_api_key_when_none_is_stored(tmp_path, monkeypatch):
     stored: dict[tuple[str, str], str] = {}
     generated = []
 
-    def fake_generate(*, host, workspace, name, login_timeout):
+    def fake_generate(*, host, workspace, name, expires, timeout, force):
         generated.append((host, workspace))
         stored[(host, workspace)] = "minted-secret"
 
@@ -650,7 +746,7 @@ def test_agent_generates_api_key_when_none_is_stored(tmp_path, monkeypatch):
         "get",
         lambda *, host, workspace: stored.get((host, workspace)),
     )
-    monkeypatch.setattr(_commands, "generate", fake_generate)
+    monkeypatch.setattr(hub_key, "generate", fake_generate)
 
     result = CliRunner().invoke(
         agent, ["--workspace", str(tmp_path), "--harness", "opencode"]
@@ -668,18 +764,22 @@ def test_agent_generates_api_key_when_none_is_stored(tmp_path, monkeypatch):
 
 
 def test_is_non_interactive_with_tty(monkeypatch):
+    from skore_cli import _runtime
+
+    _clear_agent_envs(monkeypatch)
     monkeypatch.delenv("CI", raising=False)
-    monkeypatch.setattr(_agents, "detect_agent", lambda: None)
-    monkeypatch.setattr(_agents.sys, "stdin", SimpleNamespace(isatty=lambda: True))
-    monkeypatch.setattr(_agents.sys, "stdout", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr(_runtime.sys, "stdin", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr(_runtime.sys, "stdout", SimpleNamespace(isatty=lambda: True))
     assert _commands.is_non_interactive() is False
 
 
 def test_is_non_interactive_without_tty(monkeypatch):
+    from skore_cli import _runtime
+
+    _clear_agent_envs(monkeypatch)
     monkeypatch.delenv("CI", raising=False)
-    monkeypatch.setattr(_agents, "detect_agent", lambda: None)
-    monkeypatch.setattr(_agents.sys, "stdin", SimpleNamespace(isatty=lambda: True))
-    monkeypatch.setattr(_agents.sys, "stdout", SimpleNamespace(isatty=lambda: False))
+    monkeypatch.setattr(_runtime.sys, "stdin", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr(_runtime.sys, "stdout", SimpleNamespace(isatty=lambda: False))
     assert _commands.is_non_interactive() is True
 
 
@@ -723,9 +823,9 @@ def test_pick_workspace_aborts_when_cancelled(monkeypatch):
 
 
 def test_pick_harness_returns_selection(tmp_path, monkeypatch):
-    monkeypatch.setattr(_agents, "ide_extension_hosts", lambda: ())
+    monkeypatch.setattr(_claude, "ide_extension_hosts", lambda: ())
     monkeypatch.setattr(
-        _agents.shutil,
+        _process.shutil,
         "which",
         lambda name: "/usr/bin/pi" if name == "pi" else None,
     )
@@ -746,11 +846,11 @@ def test_pick_harness_lists_detected_then_undetected(tmp_path, monkeypatch):
         def run(self):
             return None
 
-    monkeypatch.setattr(_agents, "BOB_IDE_APP_PATH", tmp_path / "absent.app")
-    monkeypatch.setattr(_agents, "CLAUDE_UI_APP_PATH", tmp_path / "absent.app")
-    monkeypatch.setattr(_agents, "ide_extension_hosts", lambda: ())
+    monkeypatch.setattr(_bob, "BOB_IDE_APP_PATH", tmp_path / "absent.app")
+    monkeypatch.setattr(_claude, "CLAUDE_UI_APP_PATH", tmp_path / "absent.app")
+    monkeypatch.setattr(_claude, "ide_extension_hosts", lambda: ())
     monkeypatch.setattr(
-        _agents.shutil,
+        _process.shutil,
         "which",
         lambda name: "/usr/bin/cursor" if name == "cursor" else None,
     )
@@ -777,10 +877,10 @@ def test_pick_harness_lists_undetected_when_none_detected(tmp_path, monkeypatch)
         def run(self):
             return None
 
-    monkeypatch.setattr(_agents, "BOB_IDE_APP_PATH", tmp_path / "absent.app")
-    monkeypatch.setattr(_agents, "CLAUDE_UI_APP_PATH", tmp_path / "absent.app")
-    monkeypatch.setattr(_agents, "ide_extension_hosts", lambda: ())
-    monkeypatch.setattr(_agents.shutil, "which", lambda name: None)
+    monkeypatch.setattr(_bob, "BOB_IDE_APP_PATH", tmp_path / "absent.app")
+    monkeypatch.setattr(_claude, "CLAUDE_UI_APP_PATH", tmp_path / "absent.app")
+    monkeypatch.setattr(_claude, "ide_extension_hosts", lambda: ())
+    monkeypatch.setattr(_process.shutil, "which", lambda name: None)
     monkeypatch.setattr(_agent_app, "HarnessPicker", _CapturePicker)
 
     assert _commands._pick_harness(tmp_path) == "pi"
@@ -790,9 +890,9 @@ def test_pick_harness_lists_undetected_when_none_detected(tmp_path, monkeypatch)
 
 
 def test_pick_harness_aborts_when_cancelled(tmp_path, monkeypatch):
-    monkeypatch.setattr(_agents, "ide_extension_hosts", lambda: ())
+    monkeypatch.setattr(_claude, "ide_extension_hosts", lambda: ())
     monkeypatch.setattr(
-        _agents.shutil,
+        _process.shutil,
         "which",
         lambda name: "/usr/bin/opencode" if name == "opencode" else None,
     )
@@ -844,7 +944,7 @@ def test_agent_no_memberships_errors(tmp_path, monkeypatch):
 
 def test_agent_errors_when_harness_not_installed(tmp_path, monkeypatch):
     _write_skore(tmp_path)
-    monkeypatch.setattr(_agents.shutil, "which", lambda cmd: None)
+    monkeypatch.setattr(_process.shutil, "which", lambda cmd: None)
     result = CliRunner().invoke(
         agent, ["--workspace", str(tmp_path), "--harness", "opencode"]
     )
@@ -1034,7 +1134,7 @@ def test_agent_non_interactive_detected_harness_not_on_path_errors(
 ):
     _clear_agent_envs(monkeypatch)
     monkeypatch.setenv("CLAUDECODE", "1")
-    monkeypatch.setattr(_agents.shutil, "which", lambda cmd: None)
+    monkeypatch.setattr(_process.shutil, "which", lambda cmd: None)
     _stub_login(monkeypatch)
     _stub_identity(monkeypatch, [_membership()])
     monkeypatch.setattr(_commands, "is_non_interactive", lambda: True)
@@ -1095,3 +1195,55 @@ def test_agent_reuse_path_auto_selects_detected_harness(tmp_path, monkeypatch):
     saved = json.loads((tmp_path / SKORE_FILENAME).read_text())
     assert saved["harness"] == "opencode"
     assert launched == []
+
+
+def test_agent_translates_harness_runtime_errors(tmp_path, monkeypatch):
+    _write_skore(tmp_path)
+    _mock_harness_on_path(monkeypatch, "opencode")
+
+    def unknown(name):
+        raise RuntimeError("harness broke")
+
+    monkeypatch.setattr(_commands, "get_harness", unknown)
+
+    result = CliRunner().invoke(
+        agent, ["--workspace", str(tmp_path), "--harness", "opencode"]
+    )
+
+    assert result.exit_code == 1
+    assert isinstance(result.exception, SystemExit)
+    assert "harness broke" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_agent_translates_unknown_harness_keys(tmp_path, monkeypatch):
+    _write_skore(tmp_path)
+    _mock_harness_on_path(monkeypatch, "opencode")
+    monkeypatch.setattr(
+        _commands, "get_harness", lambda name: (_ for _ in ()).throw(KeyError(name))
+    )
+
+    result = CliRunner().invoke(
+        agent, ["--workspace", str(tmp_path), "--harness", "opencode"]
+    )
+
+    assert result.exit_code == 1
+    assert isinstance(result.exception, SystemExit)
+    assert "unknown harness: opencode" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_agent_leaves_harness_abort_uncaught_as_click_exception(tmp_path, monkeypatch):
+    _write_skore(tmp_path)
+    _mock_harness_on_path(monkeypatch, "opencode")
+    monkeypatch.setattr(
+        _commands, "get_harness", lambda name: (_ for _ in ()).throw(click.Abort())
+    )
+
+    result = CliRunner().invoke(
+        agent, ["--workspace", str(tmp_path), "--harness", "opencode"]
+    )
+
+    assert result.exit_code == 1
+    assert "Aborted." in result.output
+    assert "Traceback" not in result.output

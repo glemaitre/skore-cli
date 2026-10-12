@@ -1,15 +1,16 @@
-"""Read and write the project-local ``.skore`` agent configuration file."""
+"""Project-local ``.skore`` configuration."""
 
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from skore_cli._agents import normalize_harness_name
-
 SKORE_FILENAME = ".skore"
+
+
+class SkoreConfigError(ValueError):
+    """A ``.skore`` file is present but cannot be loaded."""
 
 
 @dataclass
@@ -23,25 +24,40 @@ class SkoreConfig:
 
     @classmethod
     def load(cls, path: Path) -> SkoreConfig | None:
-        """Load ``.skore`` from ``path`` when present and valid."""
+        """Load ``.skore`` from ``path`` when present and valid.
+
+        Parsing does not change ``SKORE_HUB_URI``. Callers that want the saved
+        hub for this process apply it explicitly.
+        """
         file_path = path / SKORE_FILENAME
         if not file_path.is_file():
             return None
         try:
             data = json.loads(file_path.read_text() or "{}")
-        except json.JSONDecodeError:
-            return None
+        except json.JSONDecodeError as error:
+            raise SkoreConfigError(f"could not parse {file_path}: {error}") from error
+        if not isinstance(data, dict):
+            raise SkoreConfigError(f"{file_path} does not hold a JSON object.")
         hub_url = data.get("hub_url")
         workspace = data.get("workspace")
         workspace_id = data.get("workspace_id")
         if not hub_url or not workspace or workspace_id is None:
-            return None
+            raise SkoreConfigError(
+                f"{file_path} is missing hub_url, workspace, or workspace_id."
+            )
+        try:
+            parsed_id = int(workspace_id)
+        except (TypeError, ValueError) as error:
+            raise SkoreConfigError(
+                f"{file_path} workspace_id is not an integer."
+            ) from error
+        from skore_cli._agents import normalize_harness_name
+
         harness = normalize_harness_name(data.get("harness"))
-        os.environ["SKORE_HUB_URI"] = hub_url
         return cls(
             hub_url=hub_url,
             workspace=workspace,
-            workspace_id=int(workspace_id),
+            workspace_id=parsed_id,
             harness=harness,
         )
 

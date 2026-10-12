@@ -7,14 +7,9 @@ import importlib.util
 import rich_click as click
 
 import skore_cli._style  # noqa: F401  (applies the CLI palette and rich-click config)
-from skore_cli._agents import (
-    Agent,
-    detect_agent,
-    is_non_interactive,
-    resolve_skill_agent,
-)
-from skore_cli._plugins import load_plugins
-from skore_cli._style import SKORE_BANNER, console
+from skore_cli._agents import Agent, detect_agent, resolve_skill_agent
+from skore_cli._runtime import is_non_interactive
+from skore_cli._style import SKORE_BANNER, apply_interaction_style, console
 
 # These command modules defer their heavy `skore` imports into the callbacks, so
 # importing them (to build the CLI / show `--help`) stays instant. Each merges its
@@ -85,7 +80,28 @@ def _render_help(detected: Agent | None) -> str:
     return "\n".join(lines)
 
 
-@click.group(invoke_without_command=True)
+class _CLI(click.RichGroup):
+    """Root group that restyles help from the process mode at startup."""
+
+    def main(self, *args, **kwargs):
+        apply_interaction_style()
+        return super().main(*args, **kwargs)
+
+
+def _require_skore() -> None:
+    """Fail the command when the ``skore`` package is not installed.
+
+    Distribution identity stays here until the CLI moves into ``skore``.
+    Importing this package does not require ``skore``; running a command does.
+    """
+    if importlib.util.find_spec("skore") is None:
+        raise click.ClickException(
+            "this command needs the `skore` package (install it with `pip install "
+            "skore-cli` or `pip install skore`)."
+        )
+
+
+@click.group(invoke_without_command=True, cls=_CLI)
 @click.pass_context
 @click.version_option(package_name="skore-cli")
 def cli(ctx) -> None:
@@ -95,6 +111,7 @@ def cli(ctx) -> None:
     to manage Hub credentials, ``skore sync`` to synchronize report projects, and
     ``skore skills`` to install probabl-skills.
     """
+    _require_skore()
     if ctx.invoked_subcommand is None:
         if is_non_interactive():
             click.echo(_render_help(detect_agent()))
@@ -107,15 +124,3 @@ cli.add_command(skills)
 cli.add_command(agent)
 cli.add_command(hub)
 cli.add_command(sync)
-
-# Commands contributed by other packages via the `skore_cli.plugins` entry-point
-# group. Kept for third-party extensibility; the built-in `agent` command no
-# longer goes through it so the CLI never imports `skore` just to show help.
-load_plugins(cli)
-
-# Ensure ``skore`` is available without importing it explicitly
-if importlib.util.find_spec("skore") is None:
-    raise click.ClickException(
-        "this command needs the `skore` package (install it with `pip install "
-        "skore-cli` or `pip install skore`)."
-    )

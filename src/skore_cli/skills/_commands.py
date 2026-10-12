@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import json
 import shutil
 from collections.abc import Iterator
 from contextlib import contextmanager
+from functools import wraps
 from pathlib import Path
 from typing import Any
 
@@ -18,20 +18,28 @@ from skore_cli._agents import (
     DEFAULT_AGENT,
     SKILL_AGENT_NAMES,
     detect_agent,
-    is_non_interactive,
     resolve_skill_agent,
     resolve_targets,
 )
+from skore_cli._runtime import is_non_interactive
 from skore_cli._style import console
-from skore_cli.skills._catalog import GITHUB_REPO, fetch_release
+from skore_cli.skills._catalog import GITHUB_REPO
+from skore_cli.skills._release import ReleaseError, cleanup_release, load_release
+from skore_cli.skills._render import render_catalog
+from skore_cli.skills._store import (
+    SIDECAR,
+    SkillStoreError,
+    install_skill,
+    installed,
+    persist_source_catalog,
+    prune_local_catalog,
+    skill_repository,
+    write_sidecar,
+)
 from skore_cli.skills.app import (
     InstalledSkillsPicker,
     ProbablSkillsInstaller,
 )
-
-SIDECAR = ".skore-skill.json"
-LOCAL_CATALOG = ".catalog.json"
-LEGACY_CATALOG = "catalog.json"
 
 click.rich_click.COMMAND_GROUPS = {
     **getattr(click.rich_click, "COMMAND_GROUPS", {}),
@@ -85,6 +93,19 @@ def _manage_targets(agent: tuple[str, ...], *, global_: bool) -> list[tuple[str,
         raise click.ClickException(str(error)) from error
 
 
+def _report_store_errors(func):
+    """Translate local catalog failures into Click errors."""
+
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except SkillStoreError as error:
+            raise click.ClickException(str(error)) from error
+
+    return wrapper
+
+
 @contextmanager
 def _release(repo: str = GITHUB_REPO) -> Iterator[tuple[str, Path, dict[str, Any]]]:
     """Fetch the latest release and clean up its extracted files afterwards.
@@ -97,102 +118,14 @@ def _release(repo: str = GITHUB_REPO) -> Iterator[tuple[str, Path, dict[str, Any
         f"Fetching latest skills release from {repo}...", spinner="dots"
     ):
         try:
-            tag, root, catalog = fetch_release(repo)
-        except (OSError, ValueError, KeyError) as error:
-            raise click.ClickException(
-                f"Could not fetch the latest skills release from GitHub "
-                f"({repo}): {error}"
-            ) from error
+            tag, root, catalog = load_release(repo)
+        except ReleaseError as error:
+            raise click.ClickException(str(error)) from error
 
     try:
         yield tag, root, catalog
     finally:
-        # ``download_release`` extracts into a dedicated temporary directory and
-        # returns its single child, so ``root.parent`` is that temporary dir.
-        shutil.rmtree(root.parent, ignore_errors=True)
-
-
-def _skill_repository(sidecar: dict[str, Any]) -> str:
-    """Return the GitHub ``owner/name`` recorded on an installed skill."""
-    return sidecar.get("repository") or GITHUB_REPO
-
-
-def _local_catalog_path(target: Path) -> Path | None:
-    """Return the on-disk catalog file, preferring the hidden name."""
-    hidden = target / LOCAL_CATALOG
-    if hidden.is_file():
-        return hidden
-    legacy = target / LEGACY_CATALOG
-    if legacy.is_file():
-        return legacy
-    return None
-
-
-def _envelope_from_catalog_data(data: Any) -> dict[str, Any]:
-    """Normalize a catalog file into the ``sources`` envelope.
-
-    A file without ``sources`` is the previous single-repository snapshot.
-    """
-    if isinstance(data, dict) and "sources" in data:
-        return data
-    repo = GITHUB_REPO
-    if isinstance(data, dict):
-        repo = data.get("repository") or GITHUB_REPO
-    return {"sources": {repo: data}}
-
-
-def _read_local_catalog(target: Path) -> dict[str, Any]:
-    """Load the per-target catalog envelope, or an empty sources map."""
-    path = _local_catalog_path(target)
-    if path is None:
-        return {"sources": {}}
-    return _envelope_from_catalog_data(json.loads(path.read_text()))
-
-
-def _remove_legacy_catalog(target: Path) -> None:
-    """Delete a leftover ``catalog.json`` after migrating to ``.catalog.json``."""
-    legacy = target / LEGACY_CATALOG
-    if legacy.is_file():
-        legacy.unlink()
-
-
-def _write_local_catalog(target: Path, envelope: dict[str, Any]) -> None:
-    """Write the per-target catalog envelope to ``.catalog.json``."""
-    target.mkdir(parents=True, exist_ok=True)
-    (target / LOCAL_CATALOG).write_text(json.dumps(envelope, indent=2) + "\n")
-    _remove_legacy_catalog(target)
-
-
-def _persist_source_catalog(
-    target: Path, repo: str, tag: str, catalog: dict[str, Any]
-) -> None:
-    """Merge ``catalog`` for ``repo`` into ``target``'s local ``.catalog.json``."""
-    envelope = _read_local_catalog(target)
-    envelope.setdefault("sources", {})[repo] = {
-        **catalog,
-        "repository": repo,
-        "release": tag,
-    }
-    _write_local_catalog(target, envelope)
-
-
-def _prune_local_catalog(target: Path) -> None:
-    """Drop catalog sources that no longer have an installed skill in ``target``."""
-    remaining = {_skill_repository(sidecar) for _, sidecar in _installed(target)}
-    envelope = _read_local_catalog(target)
-    sources = {
-        repo: entry
-        for repo, entry in envelope.get("sources", {}).items()
-        if repo in remaining
-    }
-    path = target / LOCAL_CATALOG
-    if not sources:
-        if path.is_file():
-            path.unlink()
-        _remove_legacy_catalog(target)
-        return
-    envelope["sources"] = sources
-    _write_local_catalog(target, envelope)
+        cleanup_release(root)
 
 
 def _format_sources(repos: list[str]) -> str:
@@ -225,49 +158,13 @@ def _expand(ids: list[str], skills: dict, workflows: dict) -> list[dict]:
     return list(selected.values())
 
 
-def _install_skill(skill: dict, root: Path, target: Path, tag: str, repo: str) -> None:
-    """Copy ``skill`` from the extracted release into ``target`` and write a sidecar."""
-    source = root / skill["path"]
-    destination = target / skill["id"]
-
-    if destination.exists():
-        shutil.rmtree(destination)
-
-    shutil.copytree(source, destination)
-    _write_sidecar(destination, skill, tag, repo)
-
-
-def _write_sidecar(destination: Path, skill: dict, tag: str, repo: str) -> None:
-    """Write ``.skore-skill.json`` for an installed skill directory."""
-    sidecar = {
-        "id": skill["id"],
-        "release": tag,
-        "hash": skill["hash"],
-        "repository": repo,
-    }
-    (destination / SIDECAR).write_text(json.dumps(sidecar, indent=2))
-
-
-def _installed(target: Path):
-    """Yield ``(directory, sidecar)`` for each skill installed under ``target``."""
-    if not target.is_dir():
-        return
-
-    for child in sorted(target.iterdir()):
-        if not child.is_dir():
-            continue
-        sidecar = child / SIDECAR
-        if sidecar.is_file():
-            yield child, json.loads(sidecar.read_text())
-
-
 def _installed_skill_ids(
     targets: list[tuple[str, Path]],
 ) -> list[str]:
     """Return sorted unique installed skill ids across the given targets."""
     ids: set[str] = set()
     for _, target in targets:
-        for _, sidecar in _installed(target):
+        for _, sidecar in installed(target):
             ids.add(sidecar["id"])
     return sorted(ids)
 
@@ -278,8 +175,8 @@ def _installed_skill_sources(
     """Map each installed skill id to a display string of its source repo(s)."""
     sources: dict[str, set[str]] = {}
     for _, target in targets:
-        for _, sidecar in _installed(target):
-            sources.setdefault(sidecar["id"], set()).add(_skill_repository(sidecar))
+        for _, sidecar in installed(target):
+            sources.setdefault(sidecar["id"], set()).add(skill_repository(sidecar))
     return {
         skill_id: _format_sources(sorted(repos)) for skill_id, repos in sources.items()
     }
@@ -299,80 +196,6 @@ def _interactive_manage_picker(
     app = InstalledSkillsPicker(skill_ids, title=title, sources=sources)
     app.run()
     return app.result
-
-
-def _matches(entry: dict, query: str) -> bool:
-    fields = (
-        entry.get("id"),
-        entry.get("title"),
-        entry.get("summary"),
-        entry.get("category"),
-    )
-    return any(field and query in field.lower() for field in fields)
-
-
-def _render_catalog(
-    catalog: dict[str, Any],
-    *,
-    query: str | None = None,
-    ids: list[str] | None = None,
-) -> None:
-    workflows = catalog.get("workflows", [])
-    skills = catalog.get("skills", [])
-
-    if ids is not None:
-        wanted = set(ids)
-        workflows = [entry for entry in workflows if entry["id"] in wanted]
-        skills = [entry for entry in skills if entry["id"] in wanted]
-    elif query:
-        needle = query.lower()
-        workflows = [entry for entry in workflows if _matches(entry, needle)]
-        skills = [entry for entry in skills if _matches(entry, needle)]
-
-    if is_non_interactive():
-        _render_catalog_plain(workflows, skills)
-        return
-
-    if workflows:
-        table = Table(title="Workflows (recommended)")
-        table.add_column("id", style="skore.skill")
-        table.add_column("summary")
-        for workflow in workflows:
-            table.add_row(workflow["id"], workflow.get("summary", ""))
-        console.print(table)
-
-    if skills:
-        table = Table(title="Skills")
-        table.add_column("id", style="skore.skill")
-        table.add_column("summary")
-        for skill in skills:
-            table.add_row(skill["id"], skill.get("summary", ""))
-        console.print(table)
-
-    if not workflows and not skills:
-        console.print("No skill or workflow matches the query.")
-
-
-def _render_catalog_plain(
-    workflows: list[dict[str, Any]], skills: list[dict[str, Any]]
-) -> None:
-    """Render the catalog as plain text (no boxes) for non-interactive use."""
-    if workflows:
-        console.print("Workflows:")
-        for wf in workflows:
-            summary = wf.get("summary", "")
-            console.print(f"  {wf['id']:<26} {summary}")
-
-    if skills:
-        if workflows:
-            console.print("")
-        console.print("Skills:")
-        for skill in skills:
-            summary = skill.get("summary", "")
-            console.print(f"  {skill['id']:<26} {summary}")
-
-    if not workflows and not skills:
-        console.print("No skill or workflow matches the query.")
 
 
 def _resolve_agent_names(agent: tuple[str, ...]) -> list[str]:
@@ -415,6 +238,7 @@ def _interactive_install_options(
     app.run()
 
     if app.result is None:
+        cleanup_release(app.root)
         return None
 
     selected_ids, agent_names, global_, repo = app.result
@@ -425,8 +249,7 @@ def _interactive_install_options(
         or app.root is None
         or app.tag is None
     ):
-        if app.root is not None:
-            shutil.rmtree(app.root.parent, ignore_errors=True)
+        cleanup_release(app.root)
         return None
 
     skills_by_id, workflows_by_id = _index(app.catalog)
@@ -470,9 +293,9 @@ def _copy_selected_skills(
         task = progress.add_task("Installing", total=len(selected) * len(targets))
         for _, target in targets:
             for skill in selected:
-                _install_skill(skill, root, target, tag, repo)
+                install_skill(skill, root, target, tag, repo)
+                persist_source_catalog(target, repo, tag, catalog)
                 progress.advance(task)
-            _persist_source_catalog(target, repo, tag, catalog)
 
     return len(targets)
 
@@ -502,6 +325,7 @@ def skills(ctx) -> None:
     is_flag=True,
     help="Install every skill from the latest release (non-interactive).",
 )
+@_report_store_errors
 def install(ids, agent, global_, repo, all_) -> None:
     """Install skill(s) or workflow(s) from the latest release.
 
@@ -527,7 +351,7 @@ def install(ids, agent, global_, repo, all_) -> None:
     if interactive:
         if is_non_interactive():
             with _release(repo) as (_tag, _root, catalog):
-                _render_catalog(catalog)
+                render_catalog(catalog)
                 console.print(
                     "Run [skore.cmd]skore skills install <ids>[/] to install "
                     "specific skills, or [skore.cmd]skore skills install all[/] "
@@ -552,7 +376,7 @@ def install(ids, agent, global_, repo, all_) -> None:
                 catalog=catalog,
             )
         finally:
-            shutil.rmtree(root.parent, ignore_errors=True)
+            cleanup_release(root)
         console.print(
             f"[skore.ok]+[/] installed [skore.skill]{len(selected)}[/] skill(s) "
             f"into {n_targets} location(s) from {repo} release {tag}"
@@ -591,6 +415,7 @@ def install(ids, agent, global_, repo, all_) -> None:
 @skills.command("list")
 @_manage_agent_option
 @_global_option
+@_report_store_errors
 def list_skills(agent, global_) -> None:
     """List installed skills.
 
@@ -606,12 +431,12 @@ def list_skills(agent, global_) -> None:
 
     found = False
     for _, target in targets:
-        for _, sidecar in _installed(target):
+        for _, sidecar in installed(target):
             found = True
             table.add_row(
                 sidecar["id"],
                 sidecar.get("release", ""),
-                _skill_repository(sidecar),
+                skill_repository(sidecar),
                 str(target),
             )
 
@@ -626,6 +451,7 @@ def list_skills(agent, global_) -> None:
 @_manage_agent_option
 @_global_option
 @click.option("--all", "all_", is_flag=True, help="Update every installed skill.")
+@_report_store_errors
 def update(ids, agent, global_, all_) -> None:
     """Update installed skills to the latest release of their recorded source.
 
@@ -656,45 +482,50 @@ def update(ids, agent, global_, all_) -> None:
     requested = set(ids)
     selected_items: list[tuple[Path, dict[str, Any]]] = []
     for _, target in targets:
-        for _, sidecar in _installed(target):
+        for _, sidecar in installed(target):
             if not all_ and sidecar["id"] not in requested:
                 continue
             selected_items.append((target, sidecar))
 
     updated: list[tuple[str, str, Path]] = []
+    missing: list[str] = []
     considered_repos = sorted(
-        {_skill_repository(sidecar) for _, sidecar in selected_items}
+        {skill_repository(sidecar) for _, sidecar in selected_items}
     )
     for repo in considered_repos:
         with _release(repo) as (tag, root, catalog):
             skills_by_id, _ = _index(catalog)
             for target, sidecar in selected_items:
-                if _skill_repository(sidecar) != repo:
+                if skill_repository(sidecar) != repo:
                     continue
                 skill = skills_by_id.get(sidecar["id"])
                 if skill is None:
+                    missing.append(sidecar["id"])
                     continue
                 if sidecar.get("hash") != skill["hash"]:
-                    _install_skill(skill, root, target, tag, repo)
+                    install_skill(skill, root, target, tag, repo)
                     updated.append((sidecar["id"], repo, target))
                 else:
-                    _write_sidecar(target / sidecar["id"], skill, tag, repo)
-            for target in {
-                t for t, sidecar in selected_items if _skill_repository(sidecar) == repo
-            }:
-                _persist_source_catalog(target, repo, tag, catalog)
+                    write_sidecar(target / sidecar["id"], skill, tag, repo)
+                persist_source_catalog(target, repo, tag, catalog)
 
+    if missing:
+        skipped = ", ".join(sorted(set(missing)))
+        console.print(
+            f"[skore.warn]![/] skipped [skore.skill]{skipped}[/]: "
+            "not in the latest release."
+        )
     if updated:
         for skill_id, repo, target in updated:
             console.print(
                 f"[skore.ok]^[/] updated [skore.skill]{skill_id}[/] "
                 f"({repo}) -> [skore.path]{target}[/]"
             )
-    elif considered_repos:
+    elif not missing and considered_repos:
         console.print(
             f"All skills are up to date ({_format_sources(considered_repos)})."
         )
-    else:
+    elif not missing:
         console.print("All skills are up to date.")
 
 
@@ -704,6 +535,7 @@ def update(ids, agent, global_, all_) -> None:
 @_global_option
 @click.option("--all", "all_", is_flag=True, help="Remove every installed skill.")
 @click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompts.")
+@_report_store_errors
 def remove(ids, agent, global_, all_, yes) -> None:
     """Remove installed skills.
 
@@ -733,7 +565,7 @@ def remove(ids, agent, global_, all_, yes) -> None:
     to_remove = []
     for _, target in targets:
         if all_:
-            for skill_dir, _ in _installed(target):
+            for skill_dir, _ in installed(target):
                 to_remove.append(skill_dir)
         else:
             for skill_id in ids:
@@ -756,4 +588,4 @@ def remove(ids, agent, global_, all_, yes) -> None:
         console.print(f"[skore.ok]-[/] removed [skore.path]{skill_dir}[/]")
 
     for target in {skill_dir.parent for skill_dir in to_remove}:
-        _prune_local_catalog(target)
+        prune_local_catalog(target)

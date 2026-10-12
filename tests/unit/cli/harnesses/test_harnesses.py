@@ -13,10 +13,11 @@ import rich_click as click
 from skore_cli import _agents
 from skore_cli._agents import (
     AGENTS,
-    HarnessContext,
     installed_harnesses,
     is_harness_installed,
 )
+from skore_cli.harnesses import _bob, _claude, _copilot, _cursor, _process
+from skore_cli.harnesses._context import HarnessContext
 
 
 def _stub_hub_registry(monkeypatch, api_key):
@@ -38,25 +39,25 @@ def _ctx(workspace, **kwargs):
 def no_bob_ide_app(tmp_path, monkeypatch):
     """Keep detection off the real machine: Bob IDE is found by its bundle on
     macOS and by the ``bobide`` binary on other platforms."""
-    monkeypatch.setattr(_agents, "BOB_IDE_APP_PATH", tmp_path / "absent.app")
-    monkeypatch.setattr(_agents, "CLAUDE_UI_APP_PATH", tmp_path / "absent.app")
-    monkeypatch.setattr(_agents, "ide_extension_hosts", lambda: ())
+    monkeypatch.setattr(_bob, "BOB_IDE_APP_PATH", tmp_path / "absent.app")
+    monkeypatch.setattr(_claude, "CLAUDE_UI_APP_PATH", tmp_path / "absent.app")
+    monkeypatch.setattr(_claude, "ide_extension_hosts", lambda: ())
     for name in ("CURSOR_AGENT", "CURSOR_CLI"):
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr(_agents.subprocess, "run", lambda *a, **k: None)
-    _real_which = _agents.shutil.which
+    monkeypatch.setattr(_process.subprocess, "run", lambda *a, **k: None)
+    _real_which = _process.shutil.which
 
     def _which(name):
         if name in {"bobide", "agent", "cursor-agent"}:
             return None
         return _real_which(name)
 
-    monkeypatch.setattr(_agents.shutil, "which", _which)
+    monkeypatch.setattr(_process.shutil, "which", _which)
 
 
 def test_opencode_installed_by_binary(monkeypatch):
     monkeypatch.setattr(
-        _agents.shutil,
+        _process.shutil,
         "which",
         lambda name: "/usr/bin/opencode" if name == "opencode" else None,
     )
@@ -66,7 +67,7 @@ def test_opencode_installed_by_binary(monkeypatch):
 
 def test_claude_installed_by_binary(monkeypatch):
     monkeypatch.setattr(
-        _agents.shutil,
+        _process.shutil,
         "which",
         lambda name: "/usr/bin/claude" if name == "claude" else None,
     )
@@ -75,19 +76,19 @@ def test_claude_installed_by_binary(monkeypatch):
 
 
 def test_claude_ui_installed_by_app_bundle(tmp_path, monkeypatch):
-    monkeypatch.setattr(_agents.sys, "platform", "darwin")
+    monkeypatch.setattr(_process.sys, "platform", "darwin")
     bundle = tmp_path / "Claude.app"
     bundle.mkdir()
-    monkeypatch.setattr(_agents, "CLAUDE_UI_APP_PATH", bundle)
-    monkeypatch.setattr(_agents.shutil, "which", lambda name: None)
+    monkeypatch.setattr(_claude, "CLAUDE_UI_APP_PATH", bundle)
+    monkeypatch.setattr(_process.shutil, "which", lambda name: None)
     assert is_harness_installed(AGENTS["claude-ui"]) is True
     assert [agent.harness_name for agent in installed_harnesses()] == ["claude-ui"]
 
 
 def test_claude_ui_not_detected_by_binary_on_non_darwin(monkeypatch):
-    monkeypatch.setattr(_agents.sys, "platform", "linux")
+    monkeypatch.setattr(_process.sys, "platform", "linux")
     monkeypatch.setattr(
-        _agents.shutil,
+        _process.shutil,
         "which",
         lambda name: "/usr/bin/claude-ui" if name == "claude-ui" else None,
     )
@@ -97,7 +98,7 @@ def test_claude_ui_not_detected_by_binary_on_non_darwin(monkeypatch):
 
 def test_pi_installed_by_binary(monkeypatch):
     monkeypatch.setattr(
-        _agents.shutil,
+        _process.shutil,
         "which",
         lambda name: "/usr/bin/pi" if name == "pi" else None,
     )
@@ -106,7 +107,7 @@ def test_pi_installed_by_binary(monkeypatch):
 
 def test_cursor_installed_by_binary(monkeypatch):
     monkeypatch.setattr(
-        _agents.shutil,
+        _process.shutil,
         "which",
         lambda name: "/usr/local/bin/cursor" if name == "cursor" else None,
     )
@@ -117,7 +118,7 @@ def test_cursor_installed_by_binary(monkeypatch):
 
 def test_cursor_cli_installed_by_agent_binary(monkeypatch):
     monkeypatch.setattr(
-        _agents.shutil,
+        _process.shutil,
         "which",
         lambda name: "/usr/local/cursor/bin/agent" if name == "agent" else None,
     )
@@ -127,7 +128,7 @@ def test_cursor_cli_installed_by_agent_binary(monkeypatch):
 
 def test_cursor_cli_installed_by_cursor_agent_binary(monkeypatch):
     monkeypatch.setattr(
-        _agents.shutil,
+        _process.shutil,
         "which",
         lambda name: "/usr/local/bin/cursor-agent" if name == "cursor-agent" else None,
     )
@@ -139,11 +140,11 @@ def test_claude_plugin_installed_by_cursor_extension(tmp_path, monkeypatch):
     extensions = tmp_path / ".cursor" / "extensions"
     (extensions / "anthropic.claude-code-2.1.0-darwin-arm64").mkdir(parents=True)
     monkeypatch.setattr(
-        _agents,
+        _claude,
         "ide_extension_hosts",
         lambda: (("cursor", extensions, "cursor"),),
     )
-    monkeypatch.setattr(_agents.shutil, "which", lambda name: None)
+    monkeypatch.setattr(_process.shutil, "which", lambda name: None)
     assert is_harness_installed(AGENTS["claude-plugin"]) is True
     assert [agent.harness_name for agent in installed_harnesses()] == ["claude-plugin"]
 
@@ -152,11 +153,11 @@ def test_claude_plugin_installed_by_unversioned_extension_dir(tmp_path, monkeypa
     extensions = tmp_path / ".vscode" / "extensions"
     (extensions / "anthropic.claude-code").mkdir(parents=True)
     monkeypatch.setattr(
-        _agents,
+        _claude,
         "ide_extension_hosts",
         lambda: (("code", extensions, "vscode"),),
     )
-    monkeypatch.setattr(_agents.shutil, "which", lambda name: None)
+    monkeypatch.setattr(_process.shutil, "which", lambda name: None)
     assert is_harness_installed(AGENTS["claude-plugin"]) is True
 
 
@@ -164,18 +165,18 @@ def test_claude_plugin_ignores_unrelated_extensions(tmp_path, monkeypatch):
     extensions = tmp_path / ".vscode" / "extensions"
     (extensions / "openai.chatgpt-1.0.0").mkdir(parents=True)
     monkeypatch.setattr(
-        _agents,
+        _claude,
         "ide_extension_hosts",
         lambda: (("code", extensions, "vscode"),),
     )
-    monkeypatch.setattr(_agents.shutil, "which", lambda name: None)
+    monkeypatch.setattr(_process.shutil, "which", lambda name: None)
     assert is_harness_installed(AGENTS["claude-plugin"]) is False
     assert installed_harnesses() == []
 
 
 def test_bob_shell_installed_by_binary(monkeypatch):
     monkeypatch.setattr(
-        _agents.shutil,
+        _process.shutil,
         "which",
         lambda name: "/usr/local/bin/bob" if name == "bob" else None,
     )
@@ -185,20 +186,20 @@ def test_bob_shell_installed_by_binary(monkeypatch):
 
 def test_bob_ide_installed_by_app_bundle(tmp_path, monkeypatch):
     """On macOS the IDE installs no command, so detection uses the bundle."""
-    monkeypatch.setattr(_agents.sys, "platform", "darwin")
+    monkeypatch.setattr(_process.sys, "platform", "darwin")
     bundle = tmp_path / "IBM Bob.app"
     bundle.mkdir()
-    monkeypatch.setattr(_agents, "BOB_IDE_APP_PATH", bundle)
-    monkeypatch.setattr(_agents.shutil, "which", lambda name: None)
+    monkeypatch.setattr(_bob, "BOB_IDE_APP_PATH", bundle)
+    monkeypatch.setattr(_process.shutil, "which", lambda name: None)
     assert is_harness_installed(AGENTS["bob-ide"]) is True
     assert [agent.harness_name for agent in installed_harnesses()] == ["bob-ide"]
 
 
 def test_bob_ide_installed_by_binary_on_non_darwin(tmp_path, monkeypatch):
     """On non-macOS the IDE installs a ``bobide`` command on PATH."""
-    monkeypatch.setattr(_agents.sys, "platform", "linux")
+    monkeypatch.setattr(_process.sys, "platform", "linux")
     monkeypatch.setattr(
-        _agents.shutil,
+        _process.shutil,
         "which",
         lambda name: "/usr/bin/bobide" if name == "bobide" else None,
     )
@@ -207,7 +208,7 @@ def test_bob_ide_installed_by_binary_on_non_darwin(tmp_path, monkeypatch):
 
 
 def test_installed_harnesses_excludes_missing(monkeypatch):
-    monkeypatch.setattr(_agents.shutil, "which", lambda name: None)
+    monkeypatch.setattr(_process.shutil, "which", lambda name: None)
     assert installed_harnesses() == []
 
 
@@ -437,11 +438,11 @@ def test_launch_opencode_passes_model_flag(tmp_path, monkeypatch):
         captured["argv"] = argv
 
     monkeypatch.setattr(
-        _agents.shutil,
+        _process.shutil,
         "which",
         lambda cmd: "/usr/bin/opencode" if cmd == "opencode" else None,
     )
-    monkeypatch.setattr(_agents, "_exec_harness", fake_exec)
+    monkeypatch.setattr(_process, "_exec_harness", fake_exec)
     _agents.launch_harness(AGENTS["opencode"], tmp_path, model_id="skore-agent")
     assert captured["argv"] == ["opencode", "-m", "skore/skore-agent"]
 
@@ -454,11 +455,11 @@ def test_launch_pi_passes_provider_and_model(tmp_path, monkeypatch):
         captured["env"] = env
 
     monkeypatch.setattr(
-        _agents.shutil,
+        _process.shutil,
         "which",
         lambda cmd: "/usr/bin/pi" if cmd == "pi" else None,
     )
-    monkeypatch.setattr(_agents, "_exec_harness", fake_exec)
+    monkeypatch.setattr(_process, "_exec_harness", fake_exec)
     _agents.launch_harness(AGENTS["pi"], tmp_path, model_id="skore-agent")
     assert captured["argv"] == ["pi", "--provider", "skore", "--model", "skore-agent"]
     assert "PI_CODING_AGENT_DIR" in captured["env"]
@@ -472,11 +473,11 @@ def test_launch_cursor_opens_the_workspace(tmp_path, monkeypatch):
         captured["env"] = env
 
     monkeypatch.setattr(
-        _agents.shutil,
+        _process.shutil,
         "which",
         lambda cmd: "/usr/local/bin/cursor" if cmd == "cursor" else None,
     )
-    monkeypatch.setattr(_agents, "_exec_harness", fake_exec)
+    monkeypatch.setattr(_process, "_exec_harness", fake_exec)
     _agents.launch_harness(AGENTS["cursor"], tmp_path)
     assert captured["argv"] == ["cursor", str(tmp_path)]
     # The key lives in mcp.json, so no environment has to reach the app and a
@@ -486,7 +487,7 @@ def test_launch_cursor_opens_the_workspace(tmp_path, monkeypatch):
 
 def test_cursor_cli_ignores_generic_agent_binary(monkeypatch):
     monkeypatch.setattr(
-        _agents.shutil,
+        _process.shutil,
         "which",
         lambda name: "/usr/local/bin/agent" if name == "agent" else None,
     )
@@ -501,11 +502,11 @@ def test_launch_cursor_cli_uses_agent(tmp_path, monkeypatch):
         captured["cwd"] = os.getcwd()
 
     monkeypatch.setattr(
-        _agents.shutil,
+        _process.shutil,
         "which",
         lambda cmd: "/usr/local/cursor/bin/agent" if cmd == "agent" else None,
     )
-    monkeypatch.setattr(_agents, "_exec_harness", fake_exec)
+    monkeypatch.setattr(_process, "_exec_harness", fake_exec)
     _agents.launch_harness(AGENTS["cursor-cli"], tmp_path)
     assert captured["argv"] == ["agent"]
     assert captured["cwd"] == str(tmp_path)
@@ -518,7 +519,7 @@ def test_launch_cursor_cli_prefers_cursor_agent_when_both_exist(tmp_path, monkey
         captured["argv"] = argv
 
     monkeypatch.setattr(
-        _agents.shutil,
+        _process.shutil,
         "which",
         lambda cmd: (
             "/usr/local/bin/cursor-agent"
@@ -528,7 +529,7 @@ def test_launch_cursor_cli_prefers_cursor_agent_when_both_exist(tmp_path, monkey
             else None
         ),
     )
-    monkeypatch.setattr(_agents, "_exec_harness", fake_exec)
+    monkeypatch.setattr(_process, "_exec_harness", fake_exec)
     _agents.launch_harness(AGENTS["cursor-cli"], tmp_path)
     assert captured["argv"] == ["cursor-agent"]
 
@@ -540,11 +541,11 @@ def test_launch_cursor_cli_falls_back_to_cursor_agent(tmp_path, monkeypatch):
         captured["argv"] = argv
 
     monkeypatch.setattr(
-        _agents.shutil,
+        _process.shutil,
         "which",
         lambda cmd: "/usr/local/bin/cursor-agent" if cmd == "cursor-agent" else None,
     )
-    monkeypatch.setattr(_agents, "_exec_harness", fake_exec)
+    monkeypatch.setattr(_process, "_exec_harness", fake_exec)
     _agents.launch_harness(AGENTS["cursor-cli"], tmp_path)
     assert captured["argv"] == ["cursor-agent"]
 
@@ -558,24 +559,24 @@ def test_launch_claude_plugin_opens_cursor_uri_in_cursor(tmp_path, monkeypatch):
     extensions = tmp_path / "extensions"
     (extensions / "anthropic.claude-code-1.0.0").mkdir(parents=True)
     monkeypatch.setenv("CURSOR_AGENT", "1")
-    monkeypatch.setattr(_agents.sys, "platform", "darwin")
+    monkeypatch.setattr(_process.sys, "platform", "darwin")
     monkeypatch.setattr(
-        _agents,
+        _claude,
         "ide_extension_hosts",
         lambda: (("cursor", extensions, "cursor"),),
     )
     monkeypatch.setattr(
-        _agents.shutil,
+        _process.shutil,
         "which",
         lambda cmd: "/usr/bin/cursor" if cmd == "cursor" else None,
     )
     opened: list[list[str]] = []
     monkeypatch.setattr(
-        _agents.subprocess,
+        _process.subprocess,
         "run",
         lambda argv, check=False: opened.append(list(argv)),
     )
-    monkeypatch.setattr(_agents, "_exec_harness", fake_exec)
+    monkeypatch.setattr(_process, "_exec_harness", fake_exec)
     _agents.launch_harness(AGENTS["claude-plugin"], tmp_path)
     assert opened == [["/usr/bin/cursor", str(tmp_path)]]
     assert captured["argv"] == ["open", "cursor://anthropic.claude-code/open"]
@@ -589,7 +590,7 @@ def test_missing_harness_message_claude_plugin_outside_ide():
 
 
 def test_missing_harness_message_claude_ui_off_darwin(monkeypatch):
-    monkeypatch.setattr(_agents.sys, "platform", "linux")
+    monkeypatch.setattr(_process.sys, "platform", "linux")
     assert (
         _agents.missing_harness_message(AGENTS["claude-ui"])
         == "Claude UI is only supported on macOS."
@@ -597,10 +598,10 @@ def test_missing_harness_message_claude_ui_off_darwin(monkeypatch):
 
 
 def test_launch_claude_ui_errors_when_app_missing(tmp_path, monkeypatch):
-    monkeypatch.setattr(_agents.sys, "platform", "darwin")
-    monkeypatch.setattr(_agents, "CLAUDE_UI_APP_PATH", tmp_path / "absent.app")
+    monkeypatch.setattr(_process.sys, "platform", "darwin")
+    monkeypatch.setattr(_claude, "CLAUDE_UI_APP_PATH", tmp_path / "absent.app")
     with pytest.raises(RuntimeError, match="Claude UI is not installed"):
-        _agents._launch_claude_ui(tmp_path, "skore-agent")
+        _claude._launch_claude_ui(tmp_path, "skore-agent")
 
 
 def test_open_uri_uses_xdg_open_on_linux(monkeypatch):
@@ -609,9 +610,9 @@ def test_open_uri_uses_xdg_open_on_linux(monkeypatch):
     def fake_exec(name, argv, *, env=None):
         captured["argv"] = argv
 
-    monkeypatch.setattr(_agents.sys, "platform", "linux")
-    monkeypatch.setattr(_agents, "_exec_harness", fake_exec)
-    _agents._open_uri("vscode://anthropic.claude-code/open")
+    monkeypatch.setattr(_process.sys, "platform", "linux")
+    monkeypatch.setattr(_process, "_exec_harness", fake_exec)
+    _claude._open_uri("vscode://anthropic.claude-code/open")
     assert captured["argv"] == ["xdg-open", "vscode://anthropic.claude-code/open"]
 
 
@@ -621,9 +622,9 @@ def test_open_uri_uses_cmd_on_windows(monkeypatch):
     def fake_exec(name, argv, *, env=None):
         captured["argv"] = argv
 
-    monkeypatch.setattr(_agents.sys, "platform", "win32")
-    monkeypatch.setattr(_agents, "_exec_harness", fake_exec)
-    _agents._open_uri("vscode://anthropic.claude-code/open")
+    monkeypatch.setattr(_process.sys, "platform", "win32")
+    monkeypatch.setattr(_process, "_exec_harness", fake_exec)
+    _claude._open_uri("vscode://anthropic.claude-code/open")
     assert captured["argv"] == [
         "cmd",
         "/c",
@@ -635,11 +636,11 @@ def test_open_uri_uses_cmd_on_windows(monkeypatch):
 
 def test_open_workspace_in_ide_skips_missing_binary(tmp_path, monkeypatch):
     ran: list[object] = []
-    monkeypatch.setattr(_agents.shutil, "which", lambda name: None)
+    monkeypatch.setattr(_process.shutil, "which", lambda name: None)
     monkeypatch.setattr(
-        _agents.subprocess, "run", lambda *args, **kwargs: ran.append(args)
+        _process.subprocess, "run", lambda *args, **kwargs: ran.append(args)
     )
-    _agents._open_workspace_in_ide("code", tmp_path)
+    _claude._open_workspace_in_ide("code", tmp_path)
     assert ran == []
 
 
@@ -650,19 +651,19 @@ def test_launch_claude_plugin_errors_when_host_missing(tmp_path):
 
 def test_launch_cursor_cli_errors_when_binary_missing(tmp_path):
     with pytest.raises(RuntimeError, match="Cursor CLI is not installed"):
-        _agents._launch_cursor_cli(tmp_path, "skore-agent")
+        _cursor._launch_cursor_cli(tmp_path, "skore-agent")
 
 
 def test_launch_cursor_cli_restores_cwd_when_exec_fails(tmp_path, monkeypatch):
     previous = os.getcwd()
-    monkeypatch.setattr(_agents, "_resolve_cursor_cli_binary", lambda: "cursor-agent")
+    monkeypatch.setattr(_cursor, "_resolve_cursor_cli_binary", lambda: "cursor-agent")
     monkeypatch.setattr(
-        _agents,
+        _process,
         "_exec_harness",
         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")),
     )
     with pytest.raises(RuntimeError, match="boom"):
-        _agents._launch_cursor_cli(tmp_path, "skore-agent")
+        _cursor._launch_cursor_cli(tmp_path, "skore-agent")
     assert os.getcwd() == previous
 
 
@@ -681,12 +682,12 @@ def test_launch_copilot_cli_restores_cwd_when_exec_fails(tmp_path, monkeypatch):
     )
     _stub_hub_registry(monkeypatch, "secret-key")
     monkeypatch.setattr(
-        _agents,
+        _process,
         "_exec_harness",
         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")),
     )
     with pytest.raises(RuntimeError, match="boom"):
-        _agents._launch_copilot_cli(tmp_path, "skore-agent")
+        _copilot._launch_copilot_cli(tmp_path, "skore-agent")
     assert os.getcwd() == previous
 
 
@@ -711,30 +712,30 @@ def test_claude_plugin_opens_the_only_installed_ide(tmp_path, monkeypatch):
         captured["argv"] = argv
 
     monkeypatch.setenv("CURSOR_AGENT", "1")
-    monkeypatch.setattr(_agents.sys, "platform", "darwin")
+    monkeypatch.setattr(_process.sys, "platform", "darwin")
     monkeypatch.setattr(
-        _agents,
+        _claude,
         "ide_extension_hosts",
         lambda: _plugin_hosts(tmp_path, "code"),
     )
     monkeypatch.setattr(
-        _agents.shutil,
+        _process.shutil,
         "which",
         lambda cmd: "/usr/bin/code" if cmd == "code" else None,
     )
     opened: list[list[str]] = []
     monkeypatch.setattr(
-        _agents.subprocess,
+        _process.subprocess,
         "run",
         lambda argv, check=False: opened.append(list(argv)),
     )
     prompted: list[object] = []
     monkeypatch.setattr(
-        _agents,
+        _claude,
         "_prompt_ide",
         lambda options: prompted.append(options),
     )
-    monkeypatch.setattr(_agents, "_exec_harness", fake_exec)
+    monkeypatch.setattr(_process, "_exec_harness", fake_exec)
     assert is_harness_installed(AGENTS["claude-plugin"]) is True
     _agents.launch_harness(AGENTS["claude-plugin"], tmp_path)
     assert prompted == []
@@ -748,21 +749,21 @@ def test_launch_claude_plugin_prompts_when_several_ides(tmp_path, monkeypatch):
     def fake_exec(name, argv, *, env=None):
         captured["argv"] = argv
 
-    monkeypatch.setattr(_agents.sys, "platform", "darwin")
-    monkeypatch.setattr(_agents, "is_non_interactive", lambda: False)
+    monkeypatch.setattr(_process.sys, "platform", "darwin")
+    monkeypatch.setattr(_claude, "is_non_interactive", lambda: False)
     monkeypatch.setattr(
-        _agents,
+        _claude,
         "ide_extension_hosts",
         lambda: _plugin_hosts(tmp_path, "cursor", "code"),
     )
     monkeypatch.setattr(
-        _agents.shutil,
+        _process.shutil,
         "which",
         lambda cmd: f"/usr/bin/{cmd}" if cmd in {"cursor", "code"} else None,
     )
     opened: list[list[str]] = []
     monkeypatch.setattr(
-        _agents.subprocess,
+        _process.subprocess,
         "run",
         lambda argv, check=False: opened.append(list(argv)),
     )
@@ -772,8 +773,8 @@ def test_launch_claude_plugin_prompts_when_several_ides(tmp_path, monkeypatch):
         prompts.append(list(options))
         return "cursor"
 
-    monkeypatch.setattr(_agents, "_prompt_ide", fake_prompt)
-    monkeypatch.setattr(_agents, "_exec_harness", fake_exec)
+    monkeypatch.setattr(_claude, "_prompt_ide", fake_prompt)
+    monkeypatch.setattr(_process, "_exec_harness", fake_exec)
     _agents.launch_harness(AGENTS["claude-plugin"], tmp_path)
     assert prompts == [[("cursor", "Cursor"), ("code", "VS Code")]]
     assert opened == [["/usr/bin/cursor", str(tmp_path)]]
@@ -798,29 +799,29 @@ def test_launch_claude_plugin_reuses_saved_ide(tmp_path, monkeypatch):
         )
         + "\n"
     )
-    monkeypatch.setattr(_agents.sys, "platform", "darwin")
-    monkeypatch.setattr(_agents, "is_non_interactive", lambda: False)
+    monkeypatch.setattr(_process.sys, "platform", "darwin")
+    monkeypatch.setattr(_claude, "is_non_interactive", lambda: False)
     monkeypatch.setattr(
-        _agents,
+        _claude,
         "ide_extension_hosts",
         lambda: _plugin_hosts(tmp_path, "cursor", "code"),
     )
     monkeypatch.setattr(
-        _agents.shutil,
+        _process.shutil,
         "which",
         lambda cmd: f"/usr/bin/{cmd}" if cmd in {"cursor", "code"} else None,
     )
     opened: list[list[str]] = []
     monkeypatch.setattr(
-        _agents.subprocess,
+        _process.subprocess,
         "run",
         lambda argv, check=False: opened.append(list(argv)),
     )
     prompted: list[object] = []
     monkeypatch.setattr(
-        _agents, "_prompt_ide", lambda options: prompted.append(options)
+        _claude, "_prompt_ide", lambda options: prompted.append(options)
     )
-    monkeypatch.setattr(_agents, "_exec_harness", fake_exec)
+    monkeypatch.setattr(_process, "_exec_harness", fake_exec)
     _agents.launch_harness(AGENTS["claude-plugin"], tmp_path)
     assert prompted == []
     assert opened == [["/usr/bin/cursor", str(tmp_path)]]
@@ -828,9 +829,9 @@ def test_launch_claude_plugin_reuses_saved_ide(tmp_path, monkeypatch):
 
 
 def test_launch_claude_plugin_lists_ides_when_non_interactive(tmp_path, monkeypatch):
-    monkeypatch.setattr(_agents, "is_non_interactive", lambda: True)
+    monkeypatch.setattr(_claude, "is_non_interactive", lambda: True)
     monkeypatch.setattr(
-        _agents,
+        _claude,
         "ide_extension_hosts",
         lambda: _plugin_hosts(tmp_path, "cursor", "code", "code-insiders"),
     )
@@ -853,7 +854,7 @@ def test_prompt_ide_returns_the_picker_choice(monkeypatch):
 
     monkeypatch.setattr(agent_app, "IdePicker", _Picker)
 
-    assert _agents._prompt_ide([("code", "VS Code")]) == "code"
+    assert _claude._prompt_ide([("code", "VS Code")]) == "code"
 
 
 def test_prompt_ide_aborts_when_cancelled(monkeypatch):
@@ -869,11 +870,11 @@ def test_prompt_ide_aborts_when_cancelled(monkeypatch):
     monkeypatch.setattr(agent_app, "IdePicker", _Picker)
 
     with pytest.raises(click.Abort):
-        _agents._prompt_ide([("code", "VS Code")])
+        _claude._prompt_ide([("code", "VS Code")])
 
 
 def test_format_ide_list_joins_two_names():
-    assert _agents._format_ide_list(["Cursor", "VS Code"]) == "Cursor and VS Code"
+    assert _claude._format_ide_list(["Cursor", "VS Code"]) == "Cursor and VS Code"
 
 
 def test_claude_plugin_ide_rejects_an_unknown_suffix():
@@ -881,50 +882,50 @@ def test_claude_plugin_ide_rejects_an_unknown_suffix():
 
 
 def test_choose_claude_plugin_host_errors_when_none_installed(monkeypatch):
-    monkeypatch.setattr(_agents, "ide_extension_hosts", lambda: ())
+    monkeypatch.setattr(_claude, "ide_extension_hosts", lambda: ())
 
     with pytest.raises(RuntimeError, match="Claude Plugin is not installed"):
-        _agents._choose_claude_plugin_host()
+        _claude._choose_claude_plugin_host()
 
 
 def test_choose_claude_plugin_host_errors_when_preferred_is_missing(
     tmp_path, monkeypatch
 ):
     monkeypatch.setattr(
-        _agents,
+        _claude,
         "ide_extension_hosts",
         lambda: _plugin_hosts(tmp_path, "cursor", "code"),
     )
 
     with pytest.raises(RuntimeError, match="Claude Plugin is not installed"):
-        _agents._choose_claude_plugin_host("code-insiders")
+        _claude._choose_claude_plugin_host("code-insiders")
 
 
 def test_choose_claude_plugin_host_accepts_the_second_ide(tmp_path, monkeypatch):
-    monkeypatch.setattr(_agents, "is_non_interactive", lambda: False)
+    monkeypatch.setattr(_claude, "is_non_interactive", lambda: False)
     monkeypatch.setattr(
-        _agents,
+        _claude,
         "ide_extension_hosts",
         lambda: _plugin_hosts(tmp_path, "cursor", "code"),
     )
-    monkeypatch.setattr(_agents, "_prompt_ide", lambda options: "code")
+    monkeypatch.setattr(_claude, "_prompt_ide", lambda options: "code")
 
-    binary, scheme = _agents._choose_claude_plugin_host()
+    binary, scheme = _claude._choose_claude_plugin_host()
 
     assert (binary, scheme) == ("code", "vscode")
 
 
 def test_choose_claude_plugin_host_rejects_an_unknown_choice(tmp_path, monkeypatch):
-    monkeypatch.setattr(_agents, "is_non_interactive", lambda: False)
+    monkeypatch.setattr(_claude, "is_non_interactive", lambda: False)
     monkeypatch.setattr(
-        _agents,
+        _claude,
         "ide_extension_hosts",
         lambda: _plugin_hosts(tmp_path, "cursor", "code"),
     )
-    monkeypatch.setattr(_agents, "_prompt_ide", lambda options: "nope")
+    monkeypatch.setattr(_claude, "_prompt_ide", lambda options: "nope")
 
     with pytest.raises(RuntimeError, match="Unknown IDE"):
-        _agents._choose_claude_plugin_host()
+        _claude._choose_claude_plugin_host()
 
 
 def test_launch_bob_shell_takes_the_workspace_from_the_cwd(tmp_path, monkeypatch):
@@ -934,17 +935,17 @@ def test_launch_bob_shell_takes_the_workspace_from_the_cwd(tmp_path, monkeypatch
         captured["argv"] = argv
 
     monkeypatch.setattr(
-        _agents.shutil,
+        _process.shutil,
         "which",
         lambda cmd: "/usr/local/bin/bob" if cmd == "bob" else None,
     )
-    monkeypatch.setattr(_agents, "_exec_harness", fake_exec)
+    monkeypatch.setattr(_process, "_exec_harness", fake_exec)
     _agents.launch_harness(AGENTS["bob"], tmp_path)
     assert captured["argv"] == ["bob"]
 
 
 def test_launch_bob_ide_opens_the_app_bundle(tmp_path, monkeypatch):
-    monkeypatch.setattr(_agents.sys, "platform", "darwin")
+    monkeypatch.setattr(_process.sys, "platform", "darwin")
     captured: dict[str, object] = {}
 
     def fake_exec(name, argv, *, env=None):
@@ -952,14 +953,14 @@ def test_launch_bob_ide_opens_the_app_bundle(tmp_path, monkeypatch):
 
     bundle = tmp_path / "IBM Bob.app"
     bundle.mkdir()
-    monkeypatch.setattr(_agents, "BOB_IDE_APP_PATH", bundle)
-    monkeypatch.setattr(_agents, "_exec_harness", fake_exec)
+    monkeypatch.setattr(_bob, "BOB_IDE_APP_PATH", bundle)
+    monkeypatch.setattr(_process, "_exec_harness", fake_exec)
     _agents.launch_harness(AGENTS["bob-ide"], tmp_path)
     assert captured["argv"] == ["open", "-a", str(bundle), str(tmp_path)]
 
 
 def test_launch_claude_ui_opens_the_app_bundle(tmp_path, monkeypatch):
-    monkeypatch.setattr(_agents.sys, "platform", "darwin")
+    monkeypatch.setattr(_process.sys, "platform", "darwin")
     captured: dict[str, object] = {}
 
     def fake_exec(name, argv, *, env=None):
@@ -967,19 +968,19 @@ def test_launch_claude_ui_opens_the_app_bundle(tmp_path, monkeypatch):
 
     bundle = tmp_path / "Claude.app"
     bundle.mkdir()
-    monkeypatch.setattr(_agents, "CLAUDE_UI_APP_PATH", bundle)
-    monkeypatch.setattr(_agents, "_exec_harness", fake_exec)
+    monkeypatch.setattr(_claude, "CLAUDE_UI_APP_PATH", bundle)
+    monkeypatch.setattr(_process, "_exec_harness", fake_exec)
     _agents.launch_harness(AGENTS["claude-ui"], tmp_path)
     assert captured["argv"] == ["open", "-a", str(bundle), str(tmp_path)]
 
 
 def test_launch_claude_ui_errors_off_darwin(tmp_path, monkeypatch):
-    monkeypatch.setattr(_agents.sys, "platform", "linux")
+    monkeypatch.setattr(_process.sys, "platform", "linux")
     bundle = tmp_path / "Claude.app"
     bundle.mkdir()
-    monkeypatch.setattr(_agents, "CLAUDE_UI_APP_PATH", bundle)
+    monkeypatch.setattr(_claude, "CLAUDE_UI_APP_PATH", bundle)
     with pytest.raises(RuntimeError, match="only supported on macOS"):
-        _agents._launch_claude_ui(tmp_path, "skore-agent")
+        _claude._launch_claude_ui(tmp_path, "skore-agent")
 
 
 def test_launch_bob_ide_uses_binary_on_non_darwin(tmp_path, monkeypatch):
@@ -988,25 +989,25 @@ def test_launch_bob_ide_uses_binary_on_non_darwin(tmp_path, monkeypatch):
     def fake_exec(name, argv, *, env=None):
         captured["argv"] = argv
 
-    monkeypatch.setattr(_agents.sys, "platform", "linux")
+    monkeypatch.setattr(_process.sys, "platform", "linux")
     monkeypatch.setattr(
-        _agents.shutil,
+        _process.shutil,
         "which",
         lambda name: "/usr/bin/bobide" if name == "bobide" else None,
     )
-    monkeypatch.setattr(_agents, "_exec_harness", fake_exec)
+    monkeypatch.setattr(_process, "_exec_harness", fake_exec)
     _agents.launch_harness(AGENTS["bob-ide"], tmp_path)
     assert captured["argv"] == ["bobide", str(tmp_path)]
 
 
 def test_launch_errors_when_binary_missing(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        _agents.shutil,
+        _process.shutil,
         "which",
         lambda name: "/usr/bin/opencode" if name == "opencode" else None,
     )
     monkeypatch.setattr(
-        _agents.os,
+        _process.os,
         "execve",
         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")),
     )
@@ -1032,11 +1033,11 @@ def test_launch_claude_loads_settings_env(tmp_path, monkeypatch):
         captured["env"] = env
 
     monkeypatch.setattr(
-        _agents.shutil,
+        _process.shutil,
         "which",
         lambda cmd: "/usr/bin/claude" if cmd == "claude" else None,
     )
-    monkeypatch.setattr(_agents, "_exec_harness", fake_exec)
+    monkeypatch.setattr(_process, "_exec_harness", fake_exec)
     _agents.launch_harness(AGENTS["claude-code"], tmp_path, model_id="skore-agent")
 
     assert captured["argv"] == ["claude"]
@@ -1050,11 +1051,11 @@ def test_launch_claude_without_settings_uses_process_env(tmp_path, monkeypatch):
         captured["env"] = env
 
     monkeypatch.setattr(
-        _agents.shutil,
+        _process.shutil,
         "which",
         lambda cmd: "/usr/bin/claude" if cmd == "claude" else None,
     )
-    monkeypatch.setattr(_agents, "_exec_harness", fake_exec)
+    monkeypatch.setattr(_process, "_exec_harness", fake_exec)
     _agents.launch_harness(AGENTS["claude-code"], tmp_path)
 
     assert "ANTHROPIC_AUTH_TOKEN" not in captured["env"]
@@ -1067,11 +1068,11 @@ def _prepare_claude_launch(tmp_path, monkeypatch):
         captured["env"] = env
 
     monkeypatch.setattr(
-        _agents.shutil,
+        _process.shutil,
         "which",
         lambda cmd: "/usr/bin/claude" if cmd == "claude" else None,
     )
-    monkeypatch.setattr(_agents, "_exec_harness", fake_exec)
+    monkeypatch.setattr(_process, "_exec_harness", fake_exec)
     monkeypatch.delenv("SKORE_HUB_URI", raising=False)
     return captured
 
@@ -1114,39 +1115,75 @@ def test_launch_exports_nothing_without_a_skore_file(tmp_path, monkeypatch):
     assert "SKORE_HUB_URI" not in captured["env"]
 
 
-def test_launch_exports_nothing_from_an_incomplete_skore_file(tmp_path, monkeypatch):
-    captured = _prepare_claude_launch(tmp_path, monkeypatch)
+def test_launch_claude_rejects_invalid_settings(tmp_path):
+    settings = tmp_path / ".claude"
+    settings.mkdir()
+    (settings / "settings.local.json").write_text("{")
+
+    with pytest.raises(RuntimeError, match="not valid JSON"):
+        _claude._launch_claude(tmp_path, "skore-agent")
+
+
+def test_launch_claude_rejects_non_object_settings(tmp_path):
+    settings = tmp_path / ".claude"
+    settings.mkdir()
+    (settings / "settings.local.json").write_text("[]")
+
+    with pytest.raises(RuntimeError, match="JSON object"):
+        _claude._launch_claude(tmp_path, "skore-agent")
+
+
+def test_launch_claude_rejects_non_object_env(tmp_path):
+    settings = tmp_path / ".claude"
+    settings.mkdir()
+    (settings / "settings.local.json").write_text(json.dumps({"env": []}))
+
+    with pytest.raises(RuntimeError, match="env is not a JSON object"):
+        _claude._launch_claude(tmp_path, "skore-agent")
+
+
+def test_claude_ui_unavailable_message(monkeypatch):
+    monkeypatch.setattr(_process.sys, "platform", "linux")
+    assert _claude.claude_ui_unavailable() == "Claude UI is only supported on macOS."
+
+    monkeypatch.setattr(_process.sys, "platform", "darwin")
+    assert (
+        _claude.claude_ui_unavailable() == "Claude UI is not installed or not on PATH."
+    )
+
+
+def test_launch_rejects_an_incomplete_skore_file(tmp_path, monkeypatch):
+    _prepare_claude_launch(tmp_path, monkeypatch)
     (tmp_path / ".skore").write_text(json.dumps({"hub_url": "http://hub.test"}))
 
-    _agents.launch_harness(AGENTS["claude-code"], tmp_path)
-
-    assert "SKORE_HUB_URI" not in captured["env"]
+    with pytest.raises(RuntimeError, match="missing hub_url"):
+        _agents.launch_harness(AGENTS["claude-code"], tmp_path)
 
 
 def test_launch_harness_errors_when_not_detected(tmp_path, monkeypatch):
-    monkeypatch.setattr(_agents.shutil, "which", lambda cmd: None)
+    monkeypatch.setattr(_process.shutil, "which", lambda cmd: None)
     with pytest.raises(RuntimeError, match="not installed or not on PATH"):
         _agents.launch_harness(AGENTS["opencode"], tmp_path)
 
 
 def test_exec_harness_errors_when_executable_missing(monkeypatch):
-    monkeypatch.setattr(_agents.shutil, "which", lambda cmd: None)
+    monkeypatch.setattr(_process.shutil, "which", lambda cmd: None)
     with pytest.raises(RuntimeError, match="not installed or not on PATH"):
-        _agents._exec_harness("opencode", ["opencode"])
+        _process._exec_harness("opencode", ["opencode"])
 
 
 def test_exec_harness_invokes_execve(monkeypatch):
     recorded: dict[str, object] = {}
 
-    monkeypatch.setattr(_agents.shutil, "which", lambda cmd: f"/usr/bin/{cmd}")
+    monkeypatch.setattr(_process.shutil, "which", lambda cmd: f"/usr/bin/{cmd}")
 
     def fake_execve(executable, argv, env):
         recorded["executable"] = executable
         recorded["argv"] = argv
         recorded["env"] = env
 
-    monkeypatch.setattr(_agents.os, "execve", fake_execve)
-    _agents._exec_harness("opencode", ["opencode", "-m", "x"], env={"A": "B"})
+    monkeypatch.setattr(_process.os, "execve", fake_execve)
+    _process._exec_harness("opencode", ["opencode", "-m", "x"], env={"A": "B"})
 
     assert recorded["executable"] == "/usr/bin/opencode"
     assert recorded["argv"] == ["opencode", "-m", "x"]
@@ -1155,7 +1192,7 @@ def test_exec_harness_invokes_execve(monkeypatch):
 
 def test_detect_copilot_by_code_binary(monkeypatch):
     monkeypatch.setattr(
-        _agents.shutil,
+        _process.shutil,
         "which",
         lambda name: "/usr/bin/code" if name == "code" else None,
     )
@@ -1165,7 +1202,7 @@ def test_detect_copilot_by_code_binary(monkeypatch):
 
 def test_detect_copilot_by_code_insiders(monkeypatch):
     monkeypatch.setattr(
-        _agents.shutil,
+        _process.shutil,
         "which",
         lambda name: "/usr/bin/code-insiders" if name == "code-insiders" else None,
     )
@@ -1174,7 +1211,7 @@ def test_detect_copilot_by_code_insiders(monkeypatch):
 
 def test_detect_copilot_cli_by_binary(monkeypatch):
     monkeypatch.setattr(
-        _agents.shutil,
+        _process.shutil,
         "which",
         lambda name: "/usr/bin/copilot" if name == "copilot" else None,
     )
@@ -1208,11 +1245,11 @@ def test_launch_copilot_cli_sets_provider_env(tmp_path, monkeypatch):
         captured["cwd"] = os.getcwd()
 
     monkeypatch.setattr(
-        _agents.shutil,
+        _process.shutil,
         "which",
         lambda cmd: "/usr/bin/copilot" if cmd == "copilot" else None,
     )
-    monkeypatch.setattr(_agents, "_exec_harness", fake_exec)
+    monkeypatch.setattr(_process, "_exec_harness", fake_exec)
     _agents.launch_harness(
         AGENTS["github-copilot-cli"], tmp_path, model_id="skore-agent"
     )
@@ -1230,7 +1267,7 @@ def test_launch_copilot_cli_sets_provider_env(tmp_path, monkeypatch):
 
 def test_launch_copilot_cli_errors_without_skore(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        _agents.shutil,
+        _process.shutil,
         "which",
         lambda cmd: "/usr/bin/copilot" if cmd == "copilot" else None,
     )
@@ -1252,7 +1289,7 @@ def test_launch_copilot_cli_errors_without_stored_key(tmp_path, monkeypatch):
     )
     _stub_hub_registry(monkeypatch, None)
     monkeypatch.setattr(
-        _agents.shutil,
+        _process.shutil,
         "which",
         lambda cmd: "/usr/bin/copilot" if cmd == "copilot" else None,
     )
@@ -1308,16 +1345,16 @@ def test_launch_copilot_prefers_code_and_opens_workspace(tmp_path, monkeypatch):
         captured["argv"] = argv
 
     monkeypatch.setattr(
-        _agents.shutil,
+        _process.shutil,
         "which",
         lambda cmd: f"/usr/bin/{cmd}" if cmd in {"code", "code-insiders"} else None,
     )
     monkeypatch.setattr(
-        _agents,
+        _copilot,
         "_copilot_user_config_path",
         lambda binary, home=None: user_root / binary / "chatLanguageModels.json",
     )
-    monkeypatch.setattr(_agents, "_exec_harness", fake_exec)
+    monkeypatch.setattr(_process, "_exec_harness", fake_exec)
 
     _agents.launch_harness(AGENTS["github-copilot"], tmp_path, model_id="skore-agent")
     assert captured["argv"] == ["code", str(tmp_path)]
@@ -1337,16 +1374,16 @@ def test_launch_copilot_falls_back_to_insiders(tmp_path, monkeypatch):
         captured["argv"] = argv
 
     monkeypatch.setattr(
-        _agents.shutil,
+        _process.shutil,
         "which",
         lambda cmd: "/usr/bin/code-insiders" if cmd == "code-insiders" else None,
     )
     monkeypatch.setattr(
-        _agents,
+        _copilot,
         "_copilot_user_config_path",
         lambda binary, home=None: user_root / binary / "chatLanguageModels.json",
     )
-    monkeypatch.setattr(_agents, "_exec_harness", fake_exec)
+    monkeypatch.setattr(_process, "_exec_harness", fake_exec)
     _agents.launch_harness(AGENTS["github-copilot"], tmp_path, model_id="skore-agent")
     assert captured["argv"] == ["code-insiders", str(tmp_path)]
     user_config = user_root / "code-insiders" / "chatLanguageModels.json"
@@ -1354,19 +1391,33 @@ def test_launch_copilot_falls_back_to_insiders(tmp_path, monkeypatch):
 
 
 def test_launch_copilot_errors_when_binary_missing(tmp_path, monkeypatch):
-    monkeypatch.setattr(_agents.shutil, "which", lambda cmd: None)
+    monkeypatch.setattr(_process.shutil, "which", lambda cmd: None)
     with pytest.raises(RuntimeError, match="not installed or not on PATH"):
-        _agents._launch_copilot(tmp_path, "skore-agent")
+        _copilot._launch_copilot(tmp_path, "skore-agent")
 
 
 def test_launch_copilot_errors_when_project_config_missing(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        _agents.shutil,
+        _process.shutil,
         "which",
         lambda cmd: "/usr/bin/code" if cmd == "code" else None,
     )
     with pytest.raises(RuntimeError, match="missing .vscode/chatLanguageModels.json"):
-        _agents._launch_copilot(tmp_path, "skore-agent")
+        _copilot._launch_copilot(tmp_path, "skore-agent")
+
+
+def test_launch_copilot_errors_when_provider_missing(tmp_path, monkeypatch):
+    config_path = tmp_path / ".vscode" / "chatLanguageModels.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(json.dumps([{"name": "Other"}]))
+    monkeypatch.setattr(
+        _process.shutil,
+        "which",
+        lambda cmd: "/usr/bin/code" if cmd == "code" else None,
+    )
+
+    with pytest.raises(RuntimeError, match="has no Skore Agent provider"):
+        _copilot._launch_copilot(tmp_path, "skore-agent")
 
 
 def test_launch_copilot_errors_when_project_config_unparsable(tmp_path, monkeypatch):
@@ -1374,12 +1425,12 @@ def test_launch_copilot_errors_when_project_config_unparsable(tmp_path, monkeypa
     config_path.parent.mkdir(parents=True)
     config_path.write_text("{not json\n")
     monkeypatch.setattr(
-        _agents.shutil,
+        _process.shutil,
         "which",
         lambda cmd: "/usr/bin/code" if cmd == "code" else None,
     )
     with pytest.raises(RuntimeError, match="could not parse"):
-        _agents._launch_copilot(tmp_path, "skore-agent")
+        _copilot._launch_copilot(tmp_path, "skore-agent")
 
 
 def test_launch_copilot_finds_provider_among_others(tmp_path, monkeypatch):
@@ -1411,16 +1462,16 @@ def test_launch_copilot_finds_provider_among_others(tmp_path, monkeypatch):
         captured["argv"] = argv
 
     monkeypatch.setattr(
-        _agents.shutil,
+        _process.shutil,
         "which",
         lambda cmd: "/usr/bin/code" if cmd == "code" else None,
     )
     monkeypatch.setattr(
-        _agents,
+        _copilot,
         "_copilot_user_config_path",
         lambda binary, home=None: user_root / binary / "chatLanguageModels.json",
     )
-    monkeypatch.setattr(_agents, "_exec_harness", fake_exec)
+    monkeypatch.setattr(_process, "_exec_harness", fake_exec)
 
     _agents.launch_harness(AGENTS["github-copilot"], tmp_path, model_id="skore-agent")
     assert captured["argv"] == ["code", str(tmp_path)]
@@ -1454,7 +1505,7 @@ def test_upsert_copilot_provider_preserves_other_entries(tmp_path):
         "apiType": "chat-completions",
         "models": [{"id": "skore-agent", "name": "Skore Agent"}],
     }
-    _agents._upsert_copilot_provider(user_config, provider)
+    _copilot._upsert_copilot_provider(user_config, provider)
     providers = json.loads(user_config.read_text())
     assert len(providers) == 2
     assert providers[0]["name"] == "Other"
@@ -1466,7 +1517,7 @@ def test_upsert_copilot_provider_errors_on_unparsable_file(tmp_path):
     user_config.parent.mkdir(parents=True)
     user_config.write_text("// comments are not valid JSON\n[]\n")
     with pytest.raises(RuntimeError, match="could not parse"):
-        _agents._upsert_copilot_provider(user_config, {"name": "Skore Agent"})
+        _copilot._upsert_copilot_provider(user_config, {"name": "Skore Agent"})
 
 
 def test_upsert_copilot_provider_errors_on_non_list_file(tmp_path):
@@ -1474,7 +1525,7 @@ def test_upsert_copilot_provider_errors_on_non_list_file(tmp_path):
     user_config.parent.mkdir(parents=True)
     user_config.write_text('{"name": "not a list"}\n')
     with pytest.raises(RuntimeError, match="could not parse"):
-        _agents._upsert_copilot_provider(user_config, {"name": "Skore Agent"})
+        _copilot._upsert_copilot_provider(user_config, {"name": "Skore Agent"})
 
 
 @pytest.mark.parametrize(
@@ -1487,21 +1538,21 @@ def test_upsert_copilot_provider_errors_on_non_list_file(tmp_path):
 def test_copilot_user_config_path_per_platform(
     tmp_path, monkeypatch, platform, expected
 ):
-    monkeypatch.setattr(_agents.sys, "platform", platform)
-    path = _agents._copilot_user_config_path("code", home=tmp_path)
+    monkeypatch.setattr(_process.sys, "platform", platform)
+    path = _copilot._copilot_user_config_path("code", home=tmp_path)
     assert path == tmp_path.joinpath(*expected, "chatLanguageModels.json")
-    insiders = _agents._copilot_user_config_path("code-insiders", home=tmp_path)
+    insiders = _copilot._copilot_user_config_path("code-insiders", home=tmp_path)
     assert "Code - Insiders" in str(insiders)
 
 
 def test_copilot_user_config_path_windows_uses_appdata(tmp_path, monkeypatch):
-    monkeypatch.setattr(_agents.sys, "platform", "win32")
+    monkeypatch.setattr(_process.sys, "platform", "win32")
     monkeypatch.setenv("APPDATA", str(tmp_path / "Roaming"))
-    path = _agents._copilot_user_config_path("code", home=tmp_path)
+    path = _copilot._copilot_user_config_path("code", home=tmp_path)
     assert path == tmp_path / "Roaming" / "Code" / "User" / "chatLanguageModels.json"
 
     monkeypatch.delenv("APPDATA")
-    fallback = _agents._copilot_user_config_path("code", home=tmp_path)
+    fallback = _copilot._copilot_user_config_path("code", home=tmp_path)
     assert fallback == tmp_path.joinpath(
         "AppData", "Roaming", "Code", "User", "chatLanguageModels.json"
     )
@@ -1509,7 +1560,7 @@ def test_copilot_user_config_path_windows_uses_appdata(tmp_path, monkeypatch):
 
 def test_detect_codex_by_binary(monkeypatch):
     monkeypatch.setattr(
-        _agents.shutil,
+        _process.shutil,
         "which",
         lambda name: "/usr/bin/codex" if name == "codex" else None,
     )
@@ -1521,7 +1572,7 @@ def _codex_home(tmp_path, monkeypatch):
     """Point ``Path.home`` at a scratch dir to detect any global write."""
     monkeypatch.delenv("CODEX_HOME", raising=False)
     home = tmp_path / "home"
-    monkeypatch.setattr(_agents.Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setattr(_process.Path, "home", classmethod(lambda cls: home))
     return home
 
 
@@ -1533,11 +1584,11 @@ def _prepare_codex_launch(tmp_path, monkeypatch) -> dict[str, Any]:
         captured["env"] = env
 
     monkeypatch.setattr(
-        _agents.shutil,
+        _process.shutil,
         "which",
         lambda cmd: "/usr/bin/codex" if cmd == "codex" else None,
     )
-    monkeypatch.setattr(_agents, "_exec_harness", fake_exec)
+    monkeypatch.setattr(_process, "_exec_harness", fake_exec)
     return captured
 
 
@@ -1636,7 +1687,7 @@ def test_launch_codex_falls_back_to_model_argument(tmp_path, monkeypatch):
 
 def test_launch_codex_errors_when_project_config_missing(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        _agents.shutil,
+        _process.shutil,
         "which",
         lambda cmd: "/usr/bin/codex" if cmd == "codex" else None,
     )
@@ -1681,7 +1732,7 @@ def test_launch_codex_errors_when_project_config_invalid(
     config.parent.mkdir(parents=True)
     config.write_text(payload)
     monkeypatch.setattr(
-        _agents.shutil,
+        _process.shutil,
         "which",
         lambda cmd: "/usr/bin/codex" if cmd == "codex" else None,
     )

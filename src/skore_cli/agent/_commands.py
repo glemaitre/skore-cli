@@ -12,22 +12,24 @@ from skore_cli._agents import (
     DEFAULT_MODEL_ID,
     HARNESS_CHOICES,
     HARNESS_NAMES,
-    HarnessContext,
-    claude_plugin_ide_ready,
     detect_agent,
     get_harness,
     installed_harnesses,
     is_harness_installed,
-    is_non_interactive,
     launch_harness,
     missing_harness_message,
     normalize_harness_name,
+)
+from skore_cli._credentials import HubError, require_workspace_api_key
+from skore_cli._project import SkoreConfig, SkoreConfigError, ensure_gitignore_entry
+from skore_cli._runtime import is_non_interactive
+from skore_cli._skore import URI_ENV, apply_hub_uri, resolve_hub_uri
+from skore_cli._style import action_required, console
+from skore_cli.harnesses._claude import (
+    claude_plugin_ide_ready,
     resolve_claude_plugin_harness,
 )
-from skore_cli._skore import URI_ENV, resolve_hub_uri
-from skore_cli._style import action_required, console
-from skore_cli.agent._skore_file import SkoreConfig, ensure_gitignore_entry
-from skore_cli.hub._commands import generate
+from skore_cli.harnesses._context import HarnessContext
 
 if TYPE_CHECKING:
     from skore._plugins.hub.authentication.registry.distant import Workspace
@@ -77,30 +79,21 @@ def _pick_harness(workspace: Path) -> str:
     return app.result
 
 
-def _api_key_for(ctx, config: SkoreConfig, *, login_timeout: int) -> str:
-    """Return the workspace API key, minting one through ``generate`` if absent."""
-    from skore._plugins.hub.authentication import key
-
-    api_key = key.get(host=config.hub_url, workspace=config.workspace)
-
-    if api_key:
-        return api_key
-
-    ctx.invoke(
-        generate,
-        host=config.hub_url,
-        workspace=config.workspace,
-        name=None,
-        login_timeout=login_timeout,
-    )
-
-    api_key = key.get(host=config.hub_url, workspace=config.workspace)
-
-    if not api_key:
-        raise click.ClickException(
-            f"could not read an API key for workspace '{config.workspace}'."
+def _api_key_for(config: SkoreConfig, *, login_timeout: int) -> str:
+    """Return the workspace API key, minting one when none is stored."""
+    try:
+        api_key, minted = require_workspace_api_key(
+            host=config.hub_url,
+            workspace=config.workspace,
+            login_timeout=login_timeout,
         )
-
+    except HubError as error:
+        raise click.ClickException(str(error)) from error
+    if minted:
+        console.print(
+            "[skore.ok]+[/] generated API key for workspace "
+            f"[skore.skill]{config.workspace}[/]"
+        )
     return api_key
 
 
@@ -115,7 +108,6 @@ def _resolve_membership(memberships: list[Workspace]) -> Workspace:
 
 
 @click.command()
-@click.pass_context
 @click.option(
     "--workspace",
     "-w",
@@ -153,7 +145,6 @@ def _resolve_membership(memberships: list[Workspace]) -> Workspace:
     help="Seconds to wait for interactive device login.",
 )
 def agent(
-    ctx,
     workspace: Path,
     hub_url: str | None,
     harness_name: str | None,
@@ -185,7 +176,10 @@ def agent(
     if not workspace.is_dir():
         raise click.ClickException(f"workspace does not exist: {workspace}")
 
-    config = SkoreConfig.load(workspace)
+    try:
+        config = SkoreConfig.load(workspace)
+    except SkoreConfigError as error:
+        raise click.ClickException(str(error)) from error
     saved_harness = config.harness if config is not None else None
 
     # The saved hub_url is stored already resolved, so a raw match modulo a
@@ -193,6 +187,7 @@ def agent(
     if config is not None and (
         hub_url is None or hub_url.rstrip("/") == config.hub_url.rstrip("/")
     ):
+        apply_hub_uri(config.hub_url)
         harness_name = harness_name or config.harness
     else:
         from skore._plugins.hub.authentication.login import login
@@ -217,7 +212,7 @@ def agent(
         ensure_gitignore_entry(workspace)
         console.print(f"[skore.ok]+[/] saved [skore.path]{config_path}[/]")
 
-    api_key = _api_key_for(ctx, config, login_timeout=login_timeout)
+    api_key = _api_key_for(config, login_timeout=login_timeout)
 
     if harness_name is None:
         if is_non_interactive():
@@ -235,10 +230,16 @@ def agent(
         else:
             harness_name = _pick_harness(workspace)
 
-    if harness_name == "claude-plugin" or claude_plugin_ide_ready(harness_name):
-        harness_name = resolve_claude_plugin_harness(harness_name)
-
-    harness = get_harness(harness_name)
+    try:
+        if harness_name == "claude-plugin" or claude_plugin_ide_ready(harness_name):
+            harness_name = resolve_claude_plugin_harness(harness_name)
+        harness = get_harness(harness_name)
+    except click.Abort:
+        raise
+    except KeyError as error:
+        raise click.ClickException(f"unknown harness: {harness_name}") from error
+    except RuntimeError as error:
+        raise click.ClickException(str(error)) from error
 
     if config.harness != harness_name:
         config = SkoreConfig(
@@ -254,14 +255,17 @@ def agent(
         f"[skore.path]{workspace}[/]"
     )
     assert harness.configure is not None
-    harness.configure(
-        HarnessContext(
-            workspace=workspace,
-            hub_url=config.hub_url,
-            api_key=api_key,
-            model_id=model_id,
+    try:
+        harness.configure(
+            HarnessContext(
+                workspace=workspace,
+                hub_url=config.hub_url,
+                api_key=api_key,
+                model_id=model_id,
+            )
         )
-    )
+    except RuntimeError as error:
+        raise click.ClickException(str(error)) from error
     detected = detect_agent()
     if detected and detected.harness_name == harness_name:
         action_required(
@@ -272,4 +276,7 @@ def agent(
         return
     if not is_harness_installed(harness):
         raise click.ClickException(missing_harness_message(harness))
-    launch_harness(harness, workspace, model_id=model_id)
+    try:
+        launch_harness(harness, workspace, model_id=model_id)
+    except RuntimeError as error:
+        raise click.ClickException(str(error)) from error

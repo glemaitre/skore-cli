@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
@@ -24,11 +23,8 @@ from textual.widgets import (
 from skore_cli._agents import DEFAULT_AGENT, SKILL_AGENT_NAMES
 from skore_cli.app._banner import SkoreBanner
 from skore_cli.app._help import HELP_BINDING, HelpInput, HelpScreen
-from skore_cli.skills._catalog import (
-    GITHUB_REPO,
-    fetch_release,
-    normalize_github_repo,
-)
+from skore_cli.skills._catalog import GITHUB_REPO, normalize_github_repo
+from skore_cli.skills._release import ReleaseError, cleanup_release, load_release
 from skore_cli.skills.app._widgets import AutoRadioSet, SkillSelection
 
 _SOURCE_INTRO = (
@@ -238,8 +234,7 @@ class ProbablSkillsInstaller(App[None]):
             radio.select_index(1 if self._default_global else 0)
 
     def _cleanup_release(self) -> None:
-        if self._root is not None:
-            shutil.rmtree(self._root.parent, ignore_errors=True)
+        cleanup_release(self._root)
         self._root = None
         self._tag = None
         self._catalog = None
@@ -266,13 +261,9 @@ class ProbablSkillsInstaller(App[None]):
 
         self.notify(f"Fetching latest skills release from {repo}...")
         try:
-            tag, root, catalog = fetch_release(repo)
-        except (OSError, ValueError, KeyError) as error:
-            self.notify(
-                f"Could not fetch the latest skills release from GitHub "
-                f"({repo}): {error}",
-                severity="error",
-            )
+            tag, root, catalog = load_release(repo)
+        except ReleaseError as error:
+            self.notify(str(error), severity="error")
             return False
 
         self._cleanup_release()
