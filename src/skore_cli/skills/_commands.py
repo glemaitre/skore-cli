@@ -28,24 +28,12 @@ from skore_cli.skills._release import ReleaseError, cleanup_release, load_releas
 from skore_cli.skills._store import (
     SIDECAR,
     SkillStoreError,
-)
-from skore_cli.skills._store import (
-    install_skill as _install_skill,
-)
-from skore_cli.skills._store import (
-    installed as _installed,
-)
-from skore_cli.skills._store import (
-    persist_source_catalog as _persist_source_catalog,
-)
-from skore_cli.skills._store import (
-    prune_local_catalog as _prune_local_catalog,
-)
-from skore_cli.skills._store import (
-    skill_repository as _skill_repository,
-)
-from skore_cli.skills._store import (
-    write_sidecar as _write_sidecar,
+    install_skill,
+    installed,
+    persist_source_catalog,
+    prune_local_catalog,
+    skill_repository,
+    write_sidecar,
 )
 from skore_cli.skills.app import (
     InstalledSkillsPicker,
@@ -175,7 +163,7 @@ def _installed_skill_ids(
     """Return sorted unique installed skill ids across the given targets."""
     ids: set[str] = set()
     for _, target in targets:
-        for _, sidecar in _installed(target):
+        for _, sidecar in installed(target):
             ids.add(sidecar["id"])
     return sorted(ids)
 
@@ -186,8 +174,8 @@ def _installed_skill_sources(
     """Map each installed skill id to a display string of its source repo(s)."""
     sources: dict[str, set[str]] = {}
     for _, target in targets:
-        for _, sidecar in _installed(target):
-            sources.setdefault(sidecar["id"], set()).add(_skill_repository(sidecar))
+        for _, sidecar in installed(target):
+            sources.setdefault(sidecar["id"], set()).add(skill_repository(sidecar))
     return {
         skill_id: _format_sources(sorted(repos)) for skill_id, repos in sources.items()
     }
@@ -377,9 +365,9 @@ def _copy_selected_skills(
         task = progress.add_task("Installing", total=len(selected) * len(targets))
         for _, target in targets:
             for skill in selected:
-                _install_skill(skill, root, target, tag, repo)
+                install_skill(skill, root, target, tag, repo)
                 progress.advance(task)
-            _persist_source_catalog(target, repo, tag, catalog)
+            persist_source_catalog(target, repo, tag, catalog)
 
     return len(targets)
 
@@ -515,12 +503,12 @@ def list_skills(agent, global_) -> None:
 
     found = False
     for _, target in targets:
-        for _, sidecar in _installed(target):
+        for _, sidecar in installed(target):
             found = True
             table.add_row(
                 sidecar["id"],
                 sidecar.get("release", ""),
-                _skill_repository(sidecar),
+                skill_repository(sidecar),
                 str(target),
             )
 
@@ -566,33 +554,33 @@ def update(ids, agent, global_, all_) -> None:
     requested = set(ids)
     selected_items: list[tuple[Path, dict[str, Any]]] = []
     for _, target in targets:
-        for _, sidecar in _installed(target):
+        for _, sidecar in installed(target):
             if not all_ and sidecar["id"] not in requested:
                 continue
             selected_items.append((target, sidecar))
 
     updated: list[tuple[str, str, Path]] = []
     considered_repos = sorted(
-        {_skill_repository(sidecar) for _, sidecar in selected_items}
+        {skill_repository(sidecar) for _, sidecar in selected_items}
     )
     for repo in considered_repos:
         with _release(repo) as (tag, root, catalog):
             skills_by_id, _ = _index(catalog)
             for target, sidecar in selected_items:
-                if _skill_repository(sidecar) != repo:
+                if skill_repository(sidecar) != repo:
                     continue
                 skill = skills_by_id.get(sidecar["id"])
                 if skill is None:
                     continue
                 if sidecar.get("hash") != skill["hash"]:
-                    _install_skill(skill, root, target, tag, repo)
+                    install_skill(skill, root, target, tag, repo)
                     updated.append((sidecar["id"], repo, target))
                 else:
-                    _write_sidecar(target / sidecar["id"], skill, tag, repo)
+                    write_sidecar(target / sidecar["id"], skill, tag, repo)
             for target in {
-                t for t, sidecar in selected_items if _skill_repository(sidecar) == repo
+                t for t, sidecar in selected_items if skill_repository(sidecar) == repo
             }:
-                _persist_source_catalog(target, repo, tag, catalog)
+                persist_source_catalog(target, repo, tag, catalog)
 
     if updated:
         for skill_id, repo, target in updated:
@@ -644,7 +632,7 @@ def remove(ids, agent, global_, all_, yes) -> None:
     to_remove = []
     for _, target in targets:
         if all_:
-            for skill_dir, _ in _installed(target):
+            for skill_dir, _ in installed(target):
                 to_remove.append(skill_dir)
         else:
             for skill_id in ids:
@@ -667,4 +655,4 @@ def remove(ids, agent, global_, all_, yes) -> None:
         console.print(f"[skore.ok]-[/] removed [skore.path]{skill_dir}[/]")
 
     for target in {skill_dir.parent for skill_dir in to_remove}:
-        _prune_local_catalog(target)
+        prune_local_catalog(target)
