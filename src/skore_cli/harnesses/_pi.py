@@ -10,39 +10,47 @@ from skore_cli._project import ensure_gitignore_entry
 from skore_cli._style import console
 from skore_cli.harnesses import _process
 from skore_cli.harnesses._context import SKORE_PROVIDER_KEY, HarnessContext
+from skore_cli.harnesses._cursor import _load_json_object
 
 
 def _configure_pi(ctx: HarnessContext) -> dict[str, Any]:
-    """Write ``.pi/agent/models.json`` for Pi."""
+    """Write ``.pi/agent/models.json`` for Pi.
+
+    Other providers already in the file are left in place.
+    """
     config_dir = ctx.workspace / ".pi" / "agent"
     config_dir.mkdir(parents=True, exist_ok=True)
     config_path = config_dir / "models.json"
-    payload = {
-        "providers": {
-            SKORE_PROVIDER_KEY: {
-                "baseUrl": ctx.base_url,
-                "api": "openai-completions",
-                "apiKey": ctx.api_key,
-                "authHeader": True,
-                "compat": {
-                    "supportsDeveloperRole": False,
-                    "supportsReasoningEffort": False,
-                    "sendSessionAffinityHeaders": True,
-                    "sessionAffinityFormat": "openrouter",
-                },
-                "models": [
-                    {
-                        "id": ctx.model_id,
-                        "name": "Skore Agent",
-                        "reasoning": True,
-                        "input": ["text"],
-                        "contextWindow": 200000,
-                        "maxTokens": 8192,
-                    }
-                ],
+    payload = _load_json_object(config_path)
+    providers = payload.get("providers", {})
+    if not isinstance(providers, dict):
+        raise RuntimeError(
+            f"{config_path} providers is not a JSON object; fix or move it, "
+            "then run `skore agent` again."
+        )
+    providers[SKORE_PROVIDER_KEY] = {
+        "baseUrl": ctx.base_url,
+        "api": "openai-completions",
+        "apiKey": ctx.api_key,
+        "authHeader": True,
+        "compat": {
+            "supportsDeveloperRole": False,
+            "supportsReasoningEffort": False,
+            "sendSessionAffinityHeaders": True,
+            "sessionAffinityFormat": "openrouter",
+        },
+        "models": [
+            {
+                "id": ctx.model_id,
+                "name": "Skore Agent",
+                "reasoning": True,
+                "input": ["text"],
+                "contextWindow": 200000,
+                "maxTokens": 8192,
             }
-        }
+        ],
     }
+    payload["providers"] = providers
     config_path.write_text(json.dumps(payload, indent=2) + "\n")
     ensure_gitignore_entry(ctx.workspace, ".pi/agent/models.json")
     console.print(f"[skore.ok]+[/] wrote [skore.path]{config_path}[/]")
