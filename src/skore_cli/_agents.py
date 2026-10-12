@@ -1,100 +1,54 @@
-"""Unified agent registry, runtime detection, skills, and harness behavior."""
+"""Agent registry: detection, skill targets, and harness lookup."""
 
 from __future__ import annotations
 
-import json
 import os
-import shutil
-import subprocess
-import sys
-import tomllib
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
-DEFAULT_AGENT = "agents"
-DEFAULT_MODEL_ID = "skore-agent"
-# Name under which Skore registers in each harness config (model provider or
-# MCP server).
-SKORE_PROVIDER_KEY = "skore"
-
-# OpenCode
-OPENCODE_SCHEMA = "https://opencode.ai/config.json"
-OPENCODE_SESSION_PLUGIN = ".opencode/plugins/skore-session.js"
-# Context window only: a single rate card would be wrong for the skore-agent facade.
-OPENCODE_MODEL = {
-    "name": "Skore Agent",
-    "limit": {"context": 200_000, "output": 8192},
-}
-OPENCODE_SESSION_PLUGIN_SOURCE = """\
-export const SkoreSessionPlugin = async () => ({
-  "chat.headers": async (input, output) => {
-    if (input.sessionID) {
-      output.headers["X-Skore-Session-Id"] = input.sessionID;
-    }
-  },
-});
-"""
-
-# Cursor
-# Cursor concatenates the per-user and per-workspace allowlists, so this entry
-# applies on top of whatever the user already allows. A convenience, not a
-# security boundary.
-CURSOR_ALLOWLIST_ENTRY = "skore:*"
-CURSOR_AUTORUN_INSTRUCTIONS = (
-    "curl fetching a Skore materialize URL under /v1/materialize/ to write a "
-    "template or script into the workspace",
-    "calls to the skore MCP server's skore_agent tool",
+from skore_cli.harnesses import _bob, _claude, _cursor, _process
+from skore_cli.harnesses._bob import (
+    _configure_bob_ide,
+    _configure_bob_shell,
+    _launch_bob_ide,
+    _launch_bob_shell,
 )
-
-# Bob
-# On macOS, Bob IDE ships as an application bundle with no command on PATH
-# (users can add ``bobide`` via the IDE's "Install 'bobide' command in PATH").
-# On Linux the .deb/.rpm package and on Windows the installer put a ``bobide``
-# command on PATH. The macOS bundle path is a module constant so tests can
-# point it somewhere that does not exist.
-BOB_IDE_APP_PATH = Path("/Applications/IBM Bob.app")
-# Claude Code in the desktop app (as opposed to the ``claude`` CLI on PATH).
-CLAUDE_UI_APP_PATH = Path("/Applications/Claude.app")
-CLAUDE_PLUGIN_EXTENSION = "anthropic.claude-code"
-IDE_PLUGIN_LABELS = {
-    "cursor": "Cursor",
-    "code": "VS Code",
-    "code-insiders": "VS Code Insiders",
-}
-# Copilot in VSCode
-COPILOT_PROVIDER_NAME = "Skore Agent"
-COPILOT_PROJECT_CONFIG = ".vscode/chatLanguageModels.json"
-COPILOT_BINARIES = ("code", "code-insiders")
-COPILOT_CLI_BINARIES = ("copilot",)
-CODEX_PROVIDER_KEY = "skore"
-CODEX_PROVIDER_NAME = "Skore Agent"
-CODEX_PROJECT_CONFIG = ".codex/skore-provider.toml"
-CODEX_API_KEY_ENV = "SKORE_AGENT_API_KEY"
-
-
-@dataclass(frozen=True)
-class HarnessContext:
-    """Inputs shared by every harness configuration writer."""
-
-    workspace: Path
-    hub_url: str
-    api_key: str
-    model_id: str = DEFAULT_MODEL_ID
-
-    @property
-    def base_url(self) -> str:
-        """Return the OpenAI-compatible API base URL."""
-        return f"{self.hub_url.rstrip('/')}/v1"
-
-    @property
-    def mcp_url(self) -> str:
-        return f"{self.hub_url.rstrip('/')}/mcp"
-
-
-Configure = Callable[[HarnessContext], dict[str, Any]]
-Launch = Callable[[Path, str], None]
+from skore_cli.harnesses._claude import (
+    IDE_PLUGIN_LABELS,
+    _configure_claude,
+    _launch_claude,
+    _launch_claude_plugin,
+    _launch_claude_ui,
+    claude_plugin_ide,
+)
+from skore_cli.harnesses._codex import (
+    _configure_codex,
+    _launch_codex,
+)
+from skore_cli.harnesses._context import (
+    DEFAULT_AGENT,
+    DEFAULT_MODEL_ID,
+    Configure,
+    Launch,
+)
+from skore_cli.harnesses._copilot import (
+    COPILOT_BINARIES,
+    COPILOT_CLI_BINARIES,
+    _configure_copilot,
+    _configure_copilot_cli,
+    _launch_copilot,
+    _launch_copilot_cli,
+)
+from skore_cli.harnesses._cursor import (
+    _configure_cursor,
+    _launch_cursor,
+    _launch_cursor_cli,
+)
+from skore_cli.harnesses._opencode import (
+    _configure_opencode,
+    _launch_opencode,
+)
+from skore_cli.harnesses._pi import _configure_pi, _launch_pi
 
 
 @dataclass(frozen=True)
@@ -121,743 +75,13 @@ class Agent:
         return self.harness_label or self.label
 
 
-def _configure_opencode(ctx: HarnessContext) -> dict[str, Any]:
-    """Write ``opencode.json`` with the Skore Hub provider."""
-    from skore_cli._style import console
-    from skore_cli.agent._skore_file import ensure_gitignore_entry
-
-    config_path = ctx.workspace / "opencode.json"
-    config: dict[str, Any] = {
-        "$schema": OPENCODE_SCHEMA,
-        "model": f"{SKORE_PROVIDER_KEY}/{ctx.model_id}",
-        "provider": {
-            SKORE_PROVIDER_KEY: {
-                "npm": "@ai-sdk/openai-compatible",
-                "name": "Skore Hub",
-                "options": {
-                    "baseURL": ctx.base_url,
-                    "apiKey": ctx.api_key,
-                },
-                "models": {ctx.model_id: dict(OPENCODE_MODEL)},
-            }
-        },
-    }
-    config_path.write_text(json.dumps(config, indent=2) + "\n")
-    ensure_gitignore_entry(ctx.workspace, "opencode.json")
-    console.print(f"[skore.ok]+[/] wrote [skore.path]{config_path}[/]")
-
-    plugin_path = ctx.workspace / OPENCODE_SESSION_PLUGIN
-    plugin_path.parent.mkdir(parents=True, exist_ok=True)
-    plugin_path.write_text(OPENCODE_SESSION_PLUGIN_SOURCE)
-    ensure_gitignore_entry(ctx.workspace, OPENCODE_SESSION_PLUGIN)
-    console.print(f"[skore.ok]+[/] wrote [skore.path]{plugin_path}[/]")
-    return {"config_path": str(config_path), "plugin_path": str(plugin_path)}
-
-
-def _configure_claude(ctx: HarnessContext) -> dict[str, Any]:
-    """Write ``.claude/settings.local.json`` for Claude."""
-    from skore_cli._style import console
-    from skore_cli.agent._skore_file import ensure_gitignore_entry
-
-    config_dir = ctx.workspace / ".claude"
-    config_dir.mkdir(parents=True, exist_ok=True)
-    config_path = config_dir / "settings.local.json"
-    payload = {
-        "env": {
-            "ANTHROPIC_BASE_URL": ctx.hub_url.rstrip("/"),
-            "ANTHROPIC_AUTH_TOKEN": ctx.api_key,
-            "ANTHROPIC_MODEL": ctx.model_id,
-        }
-    }
-    config_path.write_text(json.dumps(payload, indent=2) + "\n")
-    ensure_gitignore_entry(ctx.workspace, ".claude/settings.local.json")
-    console.print(f"[skore.ok]+[/] wrote [skore.path]{config_path}[/]")
-    return {"config_path": str(config_path)}
-
-
-def _configure_pi(ctx: HarnessContext) -> dict[str, Any]:
-    """Write ``.pi/agent/models.json`` for Pi."""
-    from skore_cli._style import console
-    from skore_cli.agent._skore_file import ensure_gitignore_entry
-
-    config_dir = ctx.workspace / ".pi" / "agent"
-    config_dir.mkdir(parents=True, exist_ok=True)
-    config_path = config_dir / "models.json"
-    payload = {
-        "providers": {
-            SKORE_PROVIDER_KEY: {
-                "baseUrl": ctx.base_url,
-                "api": "openai-completions",
-                "apiKey": ctx.api_key,
-                "authHeader": True,
-                "compat": {
-                    "supportsDeveloperRole": False,
-                    "supportsReasoningEffort": False,
-                    "sendSessionAffinityHeaders": True,
-                    "sessionAffinityFormat": "openrouter",
-                },
-                "models": [
-                    {
-                        "id": ctx.model_id,
-                        "name": "Skore Agent",
-                        "reasoning": True,
-                        "input": ["text"],
-                        "contextWindow": 200000,
-                        "maxTokens": 8192,
-                    }
-                ],
-            }
-        }
-    }
-    config_path.write_text(json.dumps(payload, indent=2) + "\n")
-    ensure_gitignore_entry(ctx.workspace, ".pi/agent/models.json")
-    console.print(f"[skore.ok]+[/] wrote [skore.path]{config_path}[/]")
-    return {"config_path": str(config_path)}
-
-
-def _load_json_object(path: Path) -> dict[str, Any]:
-    """Return the JSON object stored at ``path``, or an empty one when absent.
-
-    Refuses anything else: the caller writes the result back, so treating an
-    unreadable file as empty would drop the servers and rules it holds. Cursor
-    accepts comments in these files and Python's parser does not.
-    """
-    if not path.is_file():
-        return {}
-    try:
-        data = json.loads(path.read_text() or "{}")
-    except json.JSONDecodeError as error:
-        raise RuntimeError(
-            f"{path} is not valid JSON (comments are not supported here); "
-            "fix or move it, then run `skore agent` again."
-        ) from error
-    if not isinstance(data, dict):
-        raise RuntimeError(
-            f"{path} does not hold a JSON object; fix or move it, then run "
-            "`skore agent` again."
-        )
-    return data
-
-
-def _configure_cursor(ctx: HarnessContext) -> dict[str, Any]:
-    """Point Cursor's MCP client at the hub and pre-approve the Skore tools.
-
-    These two files belong to Cursor, not to Skore, so they are read-modify-
-    written: another MCP server or permission rule the user set up survives.
-    """
-    from skore_cli._style import action_required, console
-    from skore_cli.agent._skore_file import ensure_gitignore_entry
-
-    config_dir = ctx.workspace / ".cursor"
-    config_dir.mkdir(parents=True, exist_ok=True)
-
-    config_path = config_dir / "mcp.json"
-    permissions_path = config_dir / "permissions.json"
-    # Both files are read up front so an unreadable second one cannot leave the
-    # workspace half-configured.
-    config = _load_json_object(config_path)
-    permissions = _load_json_object(permissions_path)
-
-    servers = config.get("mcpServers")
-    if not isinstance(servers, dict):
-        servers = {}
-    servers[SKORE_PROVIDER_KEY] = {
-        # Without an explicit transport Cursor probes streamable HTTP and, on
-        # any failure, retries the same URL as legacy SSE, which the hub does
-        # not serve: the real error is then buried under an SSE 404.
-        "type": "http",
-        "url": ctx.mcp_url,
-        # Written out rather than interpolated from the environment: Cursor
-        # resolves ${env:...} against its own process, which is whatever
-        # launched the app, not `skore agent`.
-        "headers": {"Authorization": f"Bearer {ctx.api_key}"},
-    }
-    config["mcpServers"] = servers
-    config_path.write_text(json.dumps(config, indent=2) + "\n")
-    ensure_gitignore_entry(ctx.workspace, ".cursor/mcp.json")
-
-    allowlist = permissions.get("mcpAllowlist")
-    if not isinstance(allowlist, list):
-        allowlist = []
-    if CURSOR_ALLOWLIST_ENTRY not in allowlist:
-        allowlist.append(CURSOR_ALLOWLIST_ENTRY)
-    permissions["mcpAllowlist"] = allowlist
-    auto_run = permissions.get("autoRun")
-    if not isinstance(auto_run, dict):
-        auto_run = {}
-    instructions = auto_run.get("allow_instructions")
-    if not isinstance(instructions, list):
-        instructions = []
-    for instruction in CURSOR_AUTORUN_INSTRUCTIONS:
-        if instruction not in instructions:
-            instructions.append(instruction)
-    auto_run["allow_instructions"] = instructions
-    permissions["autoRun"] = auto_run
-    permissions_path.write_text(json.dumps(permissions, indent=2) + "\n")
-
-    console.print(f"[skore.ok]+[/] wrote [skore.path]{config_path}[/]")
-    console.print(f"[skore.ok]+[/] wrote [skore.path]{permissions_path}[/]")
-    action_required(
-        f"enable the [skore.warn]{SKORE_PROVIDER_KEY}[/] MCP server in Cursor.\n"
-        f"  [skore.muted]Cursor Settings -> Customize -> MCP, then turn[/] "
-        f"[skore.warn]{SKORE_PROVIDER_KEY}[/] [skore.muted]on.\n"
-        f"  Config: [skore.path]{config_path}[/]"
-    )
-    return {"config_path": str(config_path)}
-
-
-def _configure_bob(ctx: HarnessContext, transport: dict[str, str]) -> dict[str, Any]:
-    """Register the hub's MCP server in ``.bob/mcp.json``.
-
-    Both Bobs read this file but declare a streamable-HTTP server differently,
-    so the transport keys come from the caller. Unlike Cursor, Bob takes the
-    server's enabled state and the tool approval from the file, so there is no
-    manual step left to the user.
-    """
-    from skore_cli._style import console
-    from skore_cli.agent._skore_file import ensure_gitignore_entry
-
-    config_dir = ctx.workspace / ".bob"
-    config_dir.mkdir(parents=True, exist_ok=True)
-    config_path = config_dir / "mcp.json"
-
-    config = _load_json_object(config_path)
-    servers = config.get("mcpServers")
-    if not isinstance(servers, dict):
-        servers = {}
-    servers[SKORE_PROVIDER_KEY] = {
-        **transport,
-        "headers": {"Authorization": f"Bearer {ctx.api_key}"},
-        "alwaysAllow": ["skore_agent"],
-        "disabled": False,
-    }
-    config["mcpServers"] = servers
-    config_path.write_text(json.dumps(config, indent=2) + "\n")
-    ensure_gitignore_entry(ctx.workspace, ".bob/mcp.json")
-
-    console.print(f"[skore.ok]+[/] wrote [skore.path]{config_path}[/]")
-    return {"config_path": str(config_path)}
-
-
-def _configure_bob_shell(ctx: HarnessContext) -> dict[str, Any]:
-    """Configure Bob Shell, which reads a streamable-HTTP server from ``httpURL``."""
-    # A plain `url` would be read as the legacy SSE endpoint, which the hub does
-    # not serve.
-    return _configure_bob(ctx, {"httpURL": ctx.mcp_url})
-
-
-def _configure_bob_ide(ctx: HarnessContext) -> dict[str, Any]:
-    """Configure Bob IDE, which reads a streamable-HTTP server from ``type``/``url``."""
-    from skore_cli._style import action_required
-
-    written = _configure_bob(ctx, {"type": "streamable-http", "url": ctx.mcp_url})
-    action_required(
-        f"raise the network timeout for [skore.warn]{SKORE_PROVIDER_KEY}[/] to "
-        "5 minutes under Settings -> MCP; a turn can outlast the 1 minute default."
-    )
-    return written
-
-
-def _copilot_provider(ctx: HarnessContext) -> dict[str, Any]:
-    """Build the Custom Endpoint provider entry for VS Code Copilot Chat."""
-    return {
-        "name": COPILOT_PROVIDER_NAME,
-        "vendor": "customendpoint",
-        "apiKey": "skore",
-        "apiType": "chat-completions",
-        "models": [
-            {
-                "id": ctx.model_id,
-                "name": COPILOT_PROVIDER_NAME,
-                "url": f"{ctx.base_url}/chat/completions",
-                "toolCalling": True,
-                "vision": False,
-                "maxInputTokens": 200000,
-                "maxOutputTokens": 8192,
-                "requestHeaders": {"X-API-Key": ctx.api_key},
-            }
-        ],
-    }
-
-
-def _configure_copilot(ctx: HarnessContext) -> dict[str, Any]:
-    """Write ``.vscode/chatLanguageModels.json`` for Copilot in VSCode."""
-    from skore_cli._style import console
-    from skore_cli.agent._skore_file import ensure_gitignore_entry
-
-    config_path = ctx.workspace / COPILOT_PROJECT_CONFIG
-    _upsert_copilot_provider(config_path, _copilot_provider(ctx))
-    ensure_gitignore_entry(ctx.workspace, COPILOT_PROJECT_CONFIG)
-    console.print(f"[skore.ok]+[/] wrote [skore.path]{config_path}[/]")
-    return {"config_path": str(config_path)}
-
-
-def _resolve_copilot_binary() -> str | None:
-    """Return the preferred VS Code binary available on PATH."""
-    for name in COPILOT_BINARIES:
-        if shutil.which(name) is not None:
-            return name
-    return None
-
-
-def _vscode_app_dirname(binary: str) -> str:
-    return "Code - Insiders" if binary == "code-insiders" else "Code"
-
-
-def _copilot_user_config_path(binary: str, *, home: Path | None = None) -> Path:
-    """Return the user-profile language-model configuration path."""
-    home = home or Path.home()
-    app = _vscode_app_dirname(binary)
-    if sys.platform == "darwin":
-        return (
-            home
-            / "Library"
-            / "Application Support"
-            / app
-            / "User"
-            / "chatLanguageModels.json"
-        )
-    if sys.platform == "win32":
-        appdata = os.environ.get("APPDATA")
-        base = Path(appdata) if appdata else home / "AppData" / "Roaming"
-        return base / app / "User" / "chatLanguageModels.json"
-    return home / ".config" / app / "User" / "chatLanguageModels.json"
-
-
-def _upsert_copilot_provider(config_path: Path, provider: dict[str, Any]) -> None:
-    """Upsert the Skore provider into a language-model file."""
-    providers: list[Any] = []
-    if config_path.is_file():
-        try:
-            parsed = json.loads(config_path.read_text() or "[]")
-        except json.JSONDecodeError as error:
-            raise RuntimeError(
-                f"could not parse {config_path}; "
-                "fix the file or add the Skore Agent provider manually."
-            ) from error
-        if not isinstance(parsed, list):
-            raise RuntimeError(
-                f"could not parse {config_path}; "
-                "fix the file or add the Skore Agent provider manually."
-            )
-        providers = parsed
-    updated = [
-        entry
-        for entry in providers
-        if not (isinstance(entry, dict) and entry.get("name") == COPILOT_PROVIDER_NAME)
-    ]
-    updated.append(provider)
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(json.dumps(updated, indent=2) + "\n")
-
-
-def _toml_string(value: str) -> str:
-    """Quote ``value`` as a TOML basic string.
-
-    JSON string escapes are a valid subset of TOML basic-string escapes, so
-    values containing quotes or backslashes stay parseable.
-    """
-    return json.dumps(value)
-
-
-def _codex_config_overrides(base_url: str) -> list[str]:
-    """Build the runtime ``--config`` overrides that declare the provider.
-
-    Codex refuses ``model_providers`` in project-local config files, so the
-    provider is passed per run instead. The API key is referenced through
-    ``env_http_headers`` (header name -> environment variable): it travels in
-    the process environment and never appears on the command line.
-    """
-    provider = f"model_providers.{CODEX_PROVIDER_KEY}"
-    return [
-        f"model_provider={_toml_string(CODEX_PROVIDER_KEY)}",
-        f"{provider}.name={_toml_string(CODEX_PROVIDER_NAME)}",
-        f"{provider}.base_url={_toml_string(base_url)}",
-        f'{provider}.wire_api="responses"',
-        f'{provider}.env_http_headers={{ "X-API-Key" = "{CODEX_API_KEY_ENV}" }}',
-    ]
-
-
-def _configure_codex(ctx: HarnessContext) -> dict[str, Any]:
-    """Write the project-local Codex provider file.
-
-    Everything lives in the workspace so each worktree keeps its own hub
-    credentials; nothing is written under ``~/.codex`` and plain ``codex``
-    runs keep the user's default model.
-    """
-    from skore_cli._style import console
-    from skore_cli.agent._skore_file import ensure_gitignore_entry
-
-    config_path = ctx.workspace / CODEX_PROJECT_CONFIG
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(
-        f"model = {_toml_string(ctx.model_id)}\n"
-        f"model_provider = {_toml_string(CODEX_PROVIDER_KEY)}\n"
-        f"base_url = {_toml_string(ctx.base_url)}\n"
-        f"api_key = {_toml_string(ctx.api_key)}\n"
-    )
-    ensure_gitignore_entry(ctx.workspace, CODEX_PROJECT_CONFIG)
-    console.print(f"[skore.ok]+[/] wrote [skore.path]{config_path}[/]")
-    console.print(
-        "[skore.muted]Note:[/] configuration is project-local and "
-        "[skore.path]~/.codex[/] [skore.muted]is untouched. Launch through[/] "
-        "[skore.skill]skore agent[/] [skore.muted]to use the Skore hub model.[/]"
-    )
-    return {"config_path": str(config_path)}
-
-
-def _launch_opencode(_workspace: Path, model_id: str) -> None:
-    _exec_harness(
-        "opencode",
-        ["opencode", "-m", f"{SKORE_PROVIDER_KEY}/{model_id}"],
-    )
-
-
-def _launch_claude(workspace: Path, _model_id: str) -> None:
-    env = os.environ.copy()
-    settings_path = workspace / ".claude" / "settings.local.json"
-    if settings_path.is_file():
-        settings = json.loads(settings_path.read_text() or "{}")
-        env.update(settings.get("env", {}))
-    _exec_harness("claude", ["claude"], env=env)
-
-
-def _launch_claude_ui(workspace: Path, _model_id: str) -> None:
-    """Open the Claude desktop app on the workspace."""
-    if sys.platform != "darwin":
-        raise RuntimeError("Claude UI is only supported on macOS.")
-    if not CLAUDE_UI_APP_PATH.is_dir():
-        raise RuntimeError("Claude UI is not installed.")
-    _exec_harness("open", ["open", "-a", str(CLAUDE_UI_APP_PATH), str(workspace)])
-
-
-def ide_extension_hosts() -> tuple[tuple[str, Path, str], ...]:
-    """Return ``(binary, extensions_dir, uri_scheme)`` for VS Code-compatible IDEs."""
-    home = Path.home()
-    return (
-        ("cursor", home / ".cursor" / "extensions", "cursor"),
-        ("code", home / ".vscode" / "extensions", "vscode"),
-        ("code-insiders", home / ".vscode-insiders" / "extensions", "vscode-insiders"),
-    )
-
-
-def _has_ide_extension(extensions_dir: Path, extension_id: str) -> bool:
-    """Return whether ``extensions_dir`` contains ``extension_id``."""
-    try:
-        entries = list(extensions_dir.iterdir())
-    except OSError:
-        return False
-    prefix = f"{extension_id}-"
-    return any(
-        path.is_dir() and (path.name == extension_id or path.name.startswith(prefix))
-        for path in entries
-    )
-
-
-def _claude_plugin_missing_message() -> str:
-    return "Claude Plugin is not installed in VS Code or Cursor."
-
-
 def missing_harness_message(agent: Agent) -> str:
     """Return why ``agent`` cannot be launched on this machine."""
     if agent.harness_name == "claude-plugin":
-        return _claude_plugin_missing_message()
-    if agent.harness_name == "claude-ui" and sys.platform != "darwin":
+        return _claude._claude_plugin_missing_message()
+    if agent.harness_name == "claude-ui" and _process.sys.platform != "darwin":
         return "Claude UI is only supported on macOS."
     return f"{agent.harness_display_name} is not installed or not on PATH."
-
-
-def _installed_claude_plugin_hosts() -> list[tuple[str, str]]:
-    """Return ``(binary, uri_scheme)`` for IDEs that have the Claude plugin."""
-    return [
-        (binary, scheme)
-        for binary, folder, scheme in ide_extension_hosts()
-        if _has_ide_extension(folder, CLAUDE_PLUGIN_EXTENSION)
-    ]
-
-
-def _prompt_ide(options: list[tuple[str, str]]) -> str:
-    """Ask which IDE to open. ``options`` are ``(binary, label)`` pairs."""
-    import rich_click as click
-
-    from skore_cli.agent.app import IdePicker
-
-    app = IdePicker(options)
-    app.run()
-    if app.result is None:
-        raise click.Abort()
-    return app.result
-
-
-def _format_ide_list(labels: list[str]) -> str:
-    """Return ``labels`` as a phrase, with a comma before the last item."""
-    if len(labels) == 2:
-        return f"{labels[0]} and {labels[1]}"
-    return f"{', '.join(labels[:-1])}, and {labels[-1]}"
-
-
-def claude_plugin_ide(name: str | None) -> str | None:
-    """Return the IDE binary encoded in ``claude-plugin-{ide}``."""
-    prefix = "claude-plugin-"
-    if not name or not name.startswith(prefix):
-        return None
-    binary = name.removeprefix(prefix)
-    if binary in IDE_PLUGIN_LABELS:
-        return binary
-    return None
-
-
-def claude_plugin_ide_ready(name: str | None) -> bool:
-    """Return whether the IDE named in ``claude-plugin-{ide}`` has the plugin."""
-    ide = claude_plugin_ide(name)
-    if ide is None:
-        return False
-    return any(binary == ide for binary, _scheme in _installed_claude_plugin_hosts())
-
-
-def _choose_claude_plugin_host(preferred: str | None = None) -> tuple[str, str]:
-    """Return the IDE to open, asking when more than one has the plugin."""
-    hosts = _installed_claude_plugin_hosts()
-    if not hosts:
-        raise RuntimeError(_claude_plugin_missing_message())
-    if preferred is not None:
-        for host in hosts:
-            if host[0] == preferred:
-                return host
-        raise RuntimeError(_claude_plugin_missing_message())
-    if len(hosts) == 1:
-        return hosts[0]
-    options = [
-        (binary, IDE_PLUGIN_LABELS.get(binary, binary)) for binary, _scheme in hosts
-    ]
-    if is_non_interactive():
-        raise RuntimeError(
-            "Claude Plugin is installed in "
-            f"{_format_ide_list([label for _, label in options])}. "
-            "Run interactively to choose an IDE."
-        )
-    chosen = _prompt_ide(options)
-    for host in hosts:
-        if host[0] == chosen:
-            return host
-    raise RuntimeError(f"Unknown IDE: {chosen}")
-
-
-def resolve_claude_plugin_harness(name: str) -> str:
-    """Return ``claude-plugin-{ide}`` for a Claude plugin harness name."""
-    binary, _scheme = _choose_claude_plugin_host(claude_plugin_ide(name))
-    return f"claude-plugin-{binary}"
-
-
-def _open_uri(uri: str) -> None:
-    """Open ``uri`` with the platform handler."""
-    if sys.platform == "darwin":
-        _exec_harness("open", ["open", uri])
-        return
-    if sys.platform == "win32":
-        _exec_harness("cmd", ["cmd", "/c", "start", "", uri])
-        return
-    _exec_harness("xdg-open", ["xdg-open", uri])
-
-
-def _open_workspace_in_ide(binary: str, workspace: Path) -> None:
-    """Ask a VS Code-compatible IDE to open ``workspace``."""
-    executable = shutil.which(binary)
-    if executable is None:
-        return
-    subprocess.run([executable, str(workspace)], check=False)
-
-
-def _launch_claude_plugin(workspace: Path, _model_id: str) -> None:
-    """Open the workspace, then the Claude Code panel, in a host IDE."""
-    from skore_cli.agent._skore_file import SkoreConfig
-
-    config = SkoreConfig.load(workspace)
-    preferred = claude_plugin_ide(config.harness) if config is not None else None
-    binary, scheme = _choose_claude_plugin_host(preferred)
-    from skore_cli._style import console
-
-    console.print(
-        f"[skore.muted]  opening in[/] "
-        f"[skore.skill]{IDE_PLUGIN_LABELS.get(binary, binary)}[/]"
-    )
-    _open_workspace_in_ide(binary, workspace)
-    _open_uri(f"{scheme}://{CLAUDE_PLUGIN_EXTENSION}/open")
-
-
-def _resolve_cursor_cli_binary() -> str | None:
-    """Return ``cursor-agent``, or ``agent`` only when the path looks like Cursor."""
-    if shutil.which("cursor-agent") is not None:
-        return "cursor-agent"
-    agent = shutil.which("agent")
-    if agent is not None and "cursor" in agent.lower():
-        return "agent"
-    return None
-
-
-def _launch_cursor_cli(workspace: Path, _model_id: str) -> None:
-    """Start the Cursor CLI (``cursor-agent``, or ``agent`` when that is Cursor)."""
-    name = _resolve_cursor_cli_binary()
-    if name is None:
-        raise RuntimeError("Cursor CLI is not installed or not on PATH.")
-    previous = os.getcwd()
-    os.chdir(workspace)
-    try:
-        _exec_harness(name, [name])
-    except BaseException:
-        os.chdir(previous)
-        raise
-
-
-def _launch_pi(workspace: Path, model_id: str) -> None:
-    env = os.environ.copy()
-    env["PI_CODING_AGENT_DIR"] = str(workspace / ".pi" / "agent")
-    _exec_harness(
-        "pi",
-        ["pi", "--provider", SKORE_PROVIDER_KEY, "--model", model_id],
-        env=env,
-    )
-
-
-def _launch_cursor(workspace: Path, _model_id: str) -> None:
-    _exec_harness("cursor", ["cursor", str(workspace)])
-
-
-def _launch_bob_shell(_workspace: Path, _model_id: str) -> None:
-    _exec_harness("bob", ["bob"])
-
-
-def _launch_bob_ide(workspace: Path, _model_id: str) -> None:
-    if sys.platform == "darwin":
-        _exec_harness("open", ["open", "-a", str(BOB_IDE_APP_PATH), str(workspace)])
-    else:
-        _exec_harness("bobide", ["bobide", str(workspace)])
-
-
-def _launch_copilot(workspace: Path, _model_id: str) -> None:
-    from skore_cli._style import action_required, console
-
-    binary = _resolve_copilot_binary()
-    if binary is None:
-        raise RuntimeError("Copilot in VSCode is not installed or not on PATH.")
-
-    # VS Code only reads providers from the user profile, so the project config
-    # written by ``_configure_copilot`` has to be mirrored there.
-    project_config = workspace / COPILOT_PROJECT_CONFIG
-    if not project_config.is_file():
-        raise RuntimeError(
-            f"missing {COPILOT_PROJECT_CONFIG}; "
-            "run skore agent --harness copilot first."
-        )
-    try:
-        providers = json.loads(project_config.read_text() or "[]")
-    except json.JSONDecodeError as error:
-        raise RuntimeError(f"could not parse {COPILOT_PROJECT_CONFIG}.") from error
-    provider = next(
-        (
-            entry
-            for entry in providers
-            if isinstance(entry, dict) and entry.get("name") == COPILOT_PROVIDER_NAME
-        ),
-        None,
-    )
-    if provider is None:
-        raise RuntimeError(
-            f"{COPILOT_PROJECT_CONFIG} has no {COPILOT_PROVIDER_NAME} provider; "
-            "run skore agent --harness copilot first."
-        )
-    user_config = _copilot_user_config_path(binary)
-    _upsert_copilot_provider(user_config, provider)
-    console.print(f"[skore.ok]+[/] synced [skore.path]{user_config}[/]")
-    action_required(
-        "select [skore.warn]Skore Agent[/] in Copilot Chat "
-        "(reload VS Code if it is missing)."
-    )
-    _exec_harness(binary, [binary, str(workspace)])
-
-
-def _configure_copilot_cli(_ctx: HarnessContext) -> dict[str, Any]:
-    """Copilot CLI takes the Hub provider from the process environment at launch."""
-    from skore_cli._style import console
-
-    console.print(
-        "[skore.muted]Copilot CLI uses the Hub key from the credential "
-        "registry at launch; no extra project file is written.[/]"
-    )
-    return {}
-
-
-def _launch_copilot_cli(workspace: Path, model_id: str) -> None:
-    """Start ``copilot`` with the same provider env as ``skore-copilot cli``."""
-    from skore._plugins.hub.authentication import key
-
-    from skore_cli.agent._skore_file import SkoreConfig
-
-    config = SkoreConfig.load(workspace)
-    if config is None or not config.hub_url:
-        raise RuntimeError(
-            "missing .skore; run skore agent --harness copilot-cli first."
-        )
-    api_key = key.get(host=config.hub_url, workspace=config.workspace)
-    if not api_key:
-        raise RuntimeError(
-            "missing Hub API key; run skore agent --harness copilot-cli first."
-        )
-    hub_url = config.hub_url
-    env = os.environ.copy()
-    env["COPILOT_PROVIDER_TYPE"] = "openai"
-    env["COPILOT_PROVIDER_BASE_URL"] = f"{hub_url.rstrip('/')}/v1"
-    env["COPILOT_PROVIDER_WIRE_API"] = "completions"
-    env["COPILOT_MODEL"] = model_id
-    env["COPILOT_PROVIDER_HEADERS"] = f"X-API-Key: {api_key}"
-    env["COPILOT_PROVIDER_MAX_OUTPUT_TOKENS"] = "8192"
-    env["COPILOT_PROVIDER_MAX_PROMPT_TOKENS"] = "200000"
-    previous = os.getcwd()
-    os.chdir(workspace)
-    try:
-        _exec_harness("copilot", ["copilot"], env=env)
-    except BaseException:
-        os.chdir(previous)
-        raise
-
-
-def _launch_codex(workspace: Path, model_id: str) -> None:
-    project_config = workspace / CODEX_PROJECT_CONFIG
-    if not project_config.is_file():
-        raise RuntimeError(
-            f"missing {CODEX_PROJECT_CONFIG}; run skore agent --harness codex first."
-        )
-    try:
-        data = tomllib.loads(project_config.read_text())
-    except tomllib.TOMLDecodeError as error:
-        raise RuntimeError(
-            f"could not parse {CODEX_PROJECT_CONFIG}; "
-            "run skore agent --harness codex first."
-        ) from error
-    base_url = data.get("base_url")
-    api_key = data.get("api_key")
-    if not isinstance(base_url, str) or not base_url:
-        raise RuntimeError(f"{CODEX_PROJECT_CONFIG} is missing a valid base_url.")
-    if not isinstance(api_key, str) or not api_key:
-        raise RuntimeError(f"{CODEX_PROJECT_CONFIG} is missing a valid api_key.")
-    model = data.get("model")
-    if not isinstance(model, str) or not model:
-        model = model_id
-    env = os.environ.copy()
-    env[CODEX_API_KEY_ENV] = api_key
-    argv = ["codex", "--model", model]
-    for override in _codex_config_overrides(base_url):
-        argv.extend(["--config", override])
-    _exec_harness("codex", argv, env=env)
-
-
-def _exec_harness(
-    name: str, argv: list[str], *, env: dict[str, str] | None = None
-) -> None:
-    executable = shutil.which(argv[0])
-    if executable is None:
-        raise RuntimeError(f"{name} is not installed or not on PATH.")
-    os.execve(executable, argv, env or os.environ)
 
 
 AGENTS: dict[str, Agent] = {
@@ -1025,14 +249,25 @@ AGENTS: dict[str, Agent] = {
     ),
 }
 
-SKILL_AGENT_NAMES = [
-    agent.name
-    for agent in AGENTS.values()
+SKILL_AGENTS = {
+    name: agent
+    for name, agent in AGENTS.items()
     if agent.project_skills_dir is not None or agent.user_skills_dir is not None
-]
-HARNESS_NAMES = [
-    agent.harness_name for agent in AGENTS.values() if agent.harness_name is not None
-]
+}
+SKILL_AGENT_NAMES = list(SKILL_AGENTS)
+HARNESS_BY_NAME = {
+    agent.harness_name: agent
+    for agent in AGENTS.values()
+    if agent.harness_name is not None
+}
+HARNESS_NAMES = list(HARNESS_BY_NAME)
+HARNESS_ALIASES: dict[str, str] = {}
+for _harness in HARNESS_BY_NAME.values():
+    canonical = _harness.harness_name
+    if canonical is None:
+        continue
+    for _token in (canonical, _harness.name, *_harness.harness_aliases):
+        HARNESS_ALIASES.setdefault(_token, canonical)
 # ``--harness claude-plugin-{ide}`` selects that IDE and is stored as-is.
 # It is not a picker row and not an alias: aliases collapse to the canonical name.
 CLAUDE_PLUGIN_IDE_CHOICES = tuple(
@@ -1067,15 +302,6 @@ def detect_agent() -> Agent | None:
         if os.environ.get(agent.env_var or "", ""):
             return agent
     return None
-
-
-def is_non_interactive() -> bool:
-    """Return whether the CLI should avoid TUIs and emit plain-text output."""
-    if os.environ.get("CI"):
-        return True
-    if detect_agent() is not None:
-        return True
-    return not (sys.stdin.isatty() and sys.stdout.isatty())
 
 
 def resolve_skill_agent(agent: Agent) -> Agent:
@@ -1138,40 +364,33 @@ def get_harness(name: str) -> Agent:
     """Return the agent that provides the named harness."""
     if claude_plugin_ide(name):
         name = "claude-plugin"
-    for agent in AGENTS.values():
-        if agent.harness_name == name:
-            return agent
-    raise KeyError(name)
+    try:
+        return HARNESS_BY_NAME[name]
+    except KeyError:
+        raise KeyError(name) from None
 
 
 def normalize_harness_name(name: str | None) -> str | None:
     """Return the current harness name for a persisted agent or harness name."""
     if name is None:
         return None
-    for agent in AGENTS.values():
-        if agent.harness_name and name in (
-            agent.name,
-            agent.harness_name,
-            *agent.harness_aliases,
-        ):
-            return agent.harness_name
-    return name
+    return HARNESS_ALIASES.get(name, name)
 
 
 def is_harness_installed(agent: Agent) -> bool:
     """Return whether the harness is on PATH or, on macOS, its app bundle."""
-    if agent.harness_name == "bob-ide" and sys.platform == "darwin":
-        return BOB_IDE_APP_PATH.is_dir()
+    if agent.harness_name == "bob-ide" and _process.sys.platform == "darwin":
+        return _bob.BOB_IDE_APP_PATH.is_dir()
     if agent.harness_name == "claude-ui":
-        return sys.platform == "darwin" and CLAUDE_UI_APP_PATH.is_dir()
+        return _process.sys.platform == "darwin" and _claude.CLAUDE_UI_APP_PATH.is_dir()
     if agent.harness_name == "claude-plugin":
-        return bool(_installed_claude_plugin_hosts())
+        return bool(_claude._installed_claude_plugin_hosts())
     if agent.harness_name == "cursor-cli":
-        return _resolve_cursor_cli_binary() is not None
+        return _cursor._resolve_cursor_cli_binary() is not None
     binaries = agent.harness_binaries or (
         (agent.harness_name,) if agent.harness_name else ()
     )
-    return any(shutil.which(binary) for binary in binaries)
+    return any(_process.shutil.which(binary) for binary in binaries)
 
 
 def installed_harnesses() -> list[Agent]:
@@ -1187,6 +406,7 @@ def launch_harness(
     agent: Agent, workspace: Path, *, model_id: str = DEFAULT_MODEL_ID
 ) -> None:
     """Launch ``agent``'s harness in ``workspace``."""
+    from skore_cli._skore import URI_ENV, apply_hub_uri
     from skore_cli._style import console
 
     if not is_harness_installed(agent):
@@ -1196,8 +416,10 @@ def launch_harness(
     console.print(
         f"[skore.ok]Launching[/] [skore.skill]{agent.harness_display_name}[/] ..."
     )
-    from skore_cli.agent._skore_file import SkoreConfig
+    from skore_cli._project import SkoreConfig
 
-    if "SKORE_HUB_URI" not in os.environ:
-        SkoreConfig.load(workspace)
+    if URI_ENV not in os.environ:
+        config = SkoreConfig.load(workspace)
+        if config is not None:
+            apply_hub_uri(config.hub_url)
     agent.launch(workspace, model_id)

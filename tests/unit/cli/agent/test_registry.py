@@ -11,17 +11,18 @@ from skore_cli._agents import (
     HARNESS_NAMES,
     SKILL_AGENT_NAMES,
     Agent,
-    HarnessContext,
     _missing_skills_directory_message,
     get_harness,
     installed_harnesses,
     is_harness_installed,
-    is_non_interactive,
     launch_harness,
     normalize_harness_name,
     resolve_skill_agent,
     resolve_targets,
 )
+from skore_cli._runtime import is_non_interactive
+from skore_cli.harnesses import _bob, _claude, _process
+from skore_cli.harnesses._context import HarnessContext
 
 
 def test_default_agent():
@@ -235,9 +236,28 @@ def test_harness_context_normalizes_hub_url():
 
 def test_is_non_interactive_when_agent_is_detected(monkeypatch):
     monkeypatch.delenv("CI", raising=False)
-    monkeypatch.setattr(_agents, "detect_agent", lambda: AGENTS["opencode"])
+    for name in (
+        "CLAUDECODE",
+        "CURSOR_AGENT",
+        "CURSOR_CLI",
+        "GEMINI_CLI",
+        "CODEX_SANDBOX",
+        "PI_CODING_AGENT",
+        "OPENCODE_CLIENT",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("OPENCODE_CLIENT", "1")
 
     assert is_non_interactive() is True
+
+
+def test_agent_env_vars_match_registry():
+    from skore_cli._runtime import AGENT_ENV_VARS
+
+    registered = {
+        agent.env_var for agent in AGENTS.values() if agent.env_var is not None
+    }
+    assert registered == set(AGENT_ENV_VARS)
 
 
 def test_is_non_interactive_in_ci(monkeypatch):
@@ -259,8 +279,8 @@ def test_harness_display_name_uses_label():
 
 
 def test_ide_extension_hosts_uses_home(tmp_path, monkeypatch):
-    monkeypatch.setattr(_agents.Path, "home", lambda: tmp_path)
-    assert _agents.ide_extension_hosts() == (
+    monkeypatch.setattr(_process.Path, "home", lambda: tmp_path)
+    assert _claude.ide_extension_hosts() == (
         ("cursor", tmp_path / ".cursor" / "extensions", "cursor"),
         ("code", tmp_path / ".vscode" / "extensions", "vscode"),
         (
@@ -272,11 +292,11 @@ def test_ide_extension_hosts_uses_home(tmp_path, monkeypatch):
 
 
 def test_harness_registry_helpers(monkeypatch, tmp_path):
-    monkeypatch.setattr(_agents, "BOB_IDE_APP_PATH", tmp_path / "absent.app")
-    monkeypatch.setattr(_agents, "CLAUDE_UI_APP_PATH", tmp_path / "absent.app")
-    monkeypatch.setattr(_agents, "ide_extension_hosts", lambda: ())
+    monkeypatch.setattr(_bob, "BOB_IDE_APP_PATH", tmp_path / "absent.app")
+    monkeypatch.setattr(_claude, "CLAUDE_UI_APP_PATH", tmp_path / "absent.app")
+    monkeypatch.setattr(_claude, "ide_extension_hosts", lambda: ())
     monkeypatch.setattr(
-        _agents.shutil,
+        _process.shutil,
         "which",
         lambda name: "/usr/bin/opencode" if name == "opencode" else None,
     )

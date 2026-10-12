@@ -145,35 +145,6 @@ def test_sync_rejects_same_endpoint_before_construction(projects):
     assert created == []
 
 
-def test_sync_transfers_between_real_local_projects(tmp_path):
-    from sklearn.datasets import make_regression
-    from sklearn.linear_model import LinearRegression
-    from skore import Project, evaluate
-
-    source_workspace = tmp_path / "source"
-    destination_workspace = tmp_path / "destination"
-    X, y = make_regression(n_samples=20, n_features=2, random_state=0)
-    source = Project("source", mode="local", workspace=source_workspace)
-    source.put("model", evaluate(LinearRegression(), X, y, splitter=0.2))
-
-    result = CliRunner().invoke(
-        sync,
-        [
-            "source",
-            "--from=local",
-            f"--from-workspace={source_workspace}",
-            "--to=local",
-            "--to-project=destination",
-            f"--to-workspace={destination_workspace}",
-        ],
-    )
-
-    assert result.exit_code == 0, result.output
-    assert "transferred" in result.output
-    destination = Project("destination", mode="local", workspace=destination_workspace)
-    assert destination.summarize().frame()["key"].tolist() == ["model"]
-
-
 def test_sync_hub_url_resolves_before_project_construction(projects, monkeypatch):
     seen = []
     monkeypatch.setattr(

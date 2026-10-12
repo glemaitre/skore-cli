@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
-import os
-
 import rich_click as click
 from rich.table import Table
 
+from skore_cli._credentials import (
+    HubError,
+    iter_api_keys,
+    mint_api_key,
+    revoke_api_key,
+)
+from skore_cli._skore import apply_hub_uri
 from skore_cli._style import console
 
 click.rich_click.COMMAND_GROUPS = {
@@ -72,12 +77,10 @@ def generate(
     force: bool,
 ) -> None:
     """Mint a workspace-scoped Hub API key and store it locally."""
-    from skore._plugins.hub.authentication import key as hub_key
-
     if host:
-        os.environ["SKORE_HUB_URI"] = host
+        host = apply_hub_uri(host, discover=True)
     try:
-        hub_key.generate(
+        mint_api_key(
             host=host,
             workspace=workspace,
             name=name,
@@ -85,12 +88,7 @@ def generate(
             timeout=login_timeout,
             force=force,
         )
-    except hub_key.KeyExistsError as error:
-        raise click.ClickException(
-            f"an API key for workspace '{workspace}' is already stored; "
-            "pass --force to replace it."
-        ) from error
-    except PermissionError as error:
+    except HubError as error:
         raise click.ClickException(str(error)) from error
     message = (
         f"[skore.ok]+[/] generated API key for workspace [skore.skill]{workspace}[/]"
@@ -112,22 +110,16 @@ def generate(
 )
 def revoke(host: str | None, workspace: str, login_timeout: int) -> None:
     """Revoke a stored Hub API key locally and on the hub."""
-    from skore._plugins.hub.authentication import key as hub_key
-
     if host:
-        os.environ["SKORE_HUB_URI"] = host
-    before = list(hub_key.keys())
-    hub_key.revoke(host=host, workspace=workspace, timeout=login_timeout)
-    if list(hub_key.keys()) == before:
+        host = apply_hub_uri(host, discover=True)
+    if not revoke_api_key(host=host, workspace=workspace, timeout=login_timeout):
         console.print("No API key stored.")
 
 
 @api_key.command("list")
 def list_keys() -> None:
     """List stored Hub API keys."""
-    from skore._plugins.hub.authentication import key as hub_key
-
-    rows = list(hub_key.keys())
+    rows = list(iter_api_keys())
     if not rows:
         console.print("No API keys stored.")
         return

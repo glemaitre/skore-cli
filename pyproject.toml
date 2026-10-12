@@ -110,11 +110,13 @@ addopts = [
   "--no-header",
   "--verbosity=2",
   "--dist=loadscope",
+  "--numprocesses=logical",
   "--durations=25",
 ]
 xfail_strict = true
 asyncio_mode = "auto"
 log_cli_level = "info"
+filterwarnings = ["error"]
 
 [tool.coverage.run]
 branch = true

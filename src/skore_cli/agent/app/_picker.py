@@ -9,7 +9,7 @@ from textual.widgets import Footer, Header, Label, RadioButton
 
 from skore_cli.app._banner import SkoreBanner
 from skore_cli.app._help import HELP_BINDING, HelpScreen
-from skore_cli.skills.app._widgets import AutoRadioSet
+from skore_cli.app._widgets import AutoRadioSet
 
 _HARNESS_INTRO = (
     "Choose the agent harness to launch.\n"

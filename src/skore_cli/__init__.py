@@ -7,13 +7,8 @@ import importlib.util
 import rich_click as click
 
 import skore_cli._style  # noqa: F401  (applies the CLI palette and rich-click config)
-from skore_cli._agents import (
-    Agent,
-    detect_agent,
-    is_non_interactive,
-    resolve_skill_agent,
-)
-from skore_cli._plugins import load_plugins
+from skore_cli._agents import Agent, detect_agent, resolve_skill_agent
+from skore_cli._runtime import is_non_interactive
 from skore_cli._style import SKORE_BANNER, console
 
 # These command modules defer their heavy `skore` imports into the callbacks, so
@@ -108,12 +103,11 @@ cli.add_command(agent)
 cli.add_command(hub)
 cli.add_command(sync)
 
-# Commands contributed by other packages via the `skore_cli.plugins` entry-point
-# group. Kept for third-party extensibility; the built-in `agent` command no
-# longer goes through it so the CLI never imports `skore` just to show help.
-load_plugins(cli)
-
-# Ensure ``skore`` is available without importing it explicitly
+# Distribution identity stays in this module until the CLI moves into ``skore``.
+# ``click``, ``rich-click``, and ``textual`` become core dependencies there.
+# Hub and MLflow stay extras and are checked when a command that needs them runs.
+# Switch ``version_option`` to package name ``skore`` and delete the presence
+# check below as part of that move.
 if importlib.util.find_spec("skore") is None:
     raise click.ClickException(
         "this command needs the `skore` package (install it with `pip install "

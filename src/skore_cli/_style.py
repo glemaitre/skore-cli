@@ -7,7 +7,7 @@ import rich_click as click
 from rich.console import Console
 from rich.theme import Theme
 
-from skore_cli._agents import is_non_interactive
+from skore_cli._runtime import is_non_interactive
 
 # Static slant-style wordmark for the top-level `skore` welcome output.
 SKORE_BANNER = r"""

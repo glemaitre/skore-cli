@@ -7,11 +7,12 @@ from textual.widgets import SelectionList, TabbedContent
 from skore_cli import cli
 from skore_cli.app._help import HelpInput, HelpScreen
 from skore_cli.skills import _commands as _skills
+from skore_cli.skills import _release as skills_release
 from skore_cli.skills._catalog import GITHUB_REPO, fetch_release
 from skore_cli.skills._commands import (
     ProbablSkillsInstaller,
 )
-from skore_cli.skills.app import _install as _install_app
+from skore_cli.skills._store import envelope_from_catalog_data
 from skore_cli.skills.app._widgets import AutoRadioSet
 
 SIDECAR = ".skore-skill.json"
@@ -763,7 +764,7 @@ def test_fetch_failure_reports_clean_error(workspace, monkeypatch):
     def boom(*args, **kwargs):
         raise OSError("network down")
 
-    monkeypatch.setattr(_skills, "fetch_release", boom)
+    monkeypatch.setattr(skills_release, "fetch_release", boom)
 
     result = _invoke(["skills", "install", "nonexistent"])
 
@@ -1144,13 +1145,13 @@ def test_update_migrates_legacy_catalog_json(release, workspace):
 
 def test_envelope_from_catalog_data_wraps_non_mapping():
     """A catalog file that is not a mapping still yields a default source."""
-    envelope = _skills._envelope_from_catalog_data(["not", "a", "mapping"])
+    envelope = envelope_from_catalog_data(["not", "a", "mapping"])
 
     assert envelope == {"sources": {GITHUB_REPO: ["not", "a", "mapping"]}}
 
 
 def test_envelope_from_catalog_data_honors_declared_repository():
-    envelope = _skills._envelope_from_catalog_data({"repository": "acme/skills"})
+    envelope = envelope_from_catalog_data({"repository": "acme/skills"})
 
     assert set(envelope["sources"]) == {"acme/skills"}
 
@@ -1300,7 +1301,7 @@ async def test_wizard_app_fetch_failure_stays_on_source(release, monkeypatch):
     def boom(repo):
         raise OSError("network down")
 
-    monkeypatch.setattr(_install_app, "fetch_release", boom)
+    monkeypatch.setattr(skills_release, "fetch_release", boom)
 
     app = ProbablSkillsInstaller(agent=(), default_global=False)
     async with app.run_test() as pilot:

@@ -1,13 +1,10 @@
-"""Read and write the project-local ``.skore`` agent configuration file."""
+"""Project-local ``.skore`` configuration."""
 
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
-
-from skore_cli._agents import normalize_harness_name
 
 SKORE_FILENAME = ".skore"
 
@@ -23,7 +20,11 @@ class SkoreConfig:
 
     @classmethod
     def load(cls, path: Path) -> SkoreConfig | None:
-        """Load ``.skore`` from ``path`` when present and valid."""
+        """Load ``.skore`` from ``path`` when present and valid.
+
+        Parsing does not change ``SKORE_HUB_URI``. Callers that want the saved
+        hub for this process apply it explicitly.
+        """
         file_path = path / SKORE_FILENAME
         if not file_path.is_file():
             return None
@@ -36,8 +37,9 @@ class SkoreConfig:
         workspace_id = data.get("workspace_id")
         if not hub_url or not workspace or workspace_id is None:
             return None
+        from skore_cli._agents import normalize_harness_name
+
         harness = normalize_harness_name(data.get("harness"))
-        os.environ["SKORE_HUB_URI"] = hub_url
         return cls(
             hub_url=hub_url,
             workspace=workspace,
