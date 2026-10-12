@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 import rich.box
 import rich_click as click
 from rich.console import Console
@@ -57,7 +59,7 @@ def _get_console() -> Console:
     return _console
 
 
-console = _ConsoleProxy()
+console: Console = cast(Console, _ConsoleProxy())
 
 
 def action_required(message: str) -> None:

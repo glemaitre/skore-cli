@@ -277,8 +277,7 @@ HARNESS_NAMES = list(HARNESS_BY_NAME)
 HARNESS_ALIASES: dict[str, str] = {}
 for _harness in HARNESS_BY_NAME.values():
     canonical = _harness.harness_name
-    if canonical is None:
-        continue
+    assert canonical is not None
     for _token in (canonical, _harness.name, *_harness.harness_aliases):
         HARNESS_ALIASES.setdefault(_token, canonical)
 # ``--harness claude-plugin-{ide}`` selects that IDE and is stored as-is.

@@ -75,6 +75,41 @@ def test_cli_interactive_without_subcommand_prints_help(monkeypatch):
     assert "Usage:" in result.output
 
 
+def test_cli_requires_the_skore_package(monkeypatch):
+    from click.testing import CliRunner
+
+    import skore_cli
+    from skore_cli import cli
+
+    monkeypatch.setattr(skore_cli.importlib.util, "find_spec", lambda name: None)
+
+    result = CliRunner().invoke(cli, ["skills", "list"])
+
+    assert result.exit_code != 0
+    assert "needs the `skore` package" in result.output
+
+
+def test_module_entry_point_exposes_cli():
+    import skore_cli.__main__ as entry
+    from skore_cli import cli
+
+    assert entry.cli is cli
+
+
+def test_cli_help_for_agent_without_a_harness(monkeypatch):
+    from click.testing import CliRunner
+
+    from skore_cli import cli
+
+    _clear_agent_envs(monkeypatch)
+    monkeypatch.setenv("GEMINI_CLI", "1")
+    result = CliRunner().invoke(cli, [])
+
+    assert result.exit_code == 0
+    assert "Detected: Gemini CLI" in result.output
+    assert "Harness:" not in result.output
+
+
 def test_cli_help_claude_code_detected(monkeypatch):
     from click.testing import CliRunner
 

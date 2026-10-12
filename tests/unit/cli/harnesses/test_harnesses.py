@@ -1124,6 +1124,34 @@ def test_launch_claude_rejects_invalid_settings(tmp_path):
         _claude._launch_claude(tmp_path, "skore-agent")
 
 
+def test_launch_claude_rejects_non_object_settings(tmp_path):
+    settings = tmp_path / ".claude"
+    settings.mkdir()
+    (settings / "settings.local.json").write_text("[]")
+
+    with pytest.raises(RuntimeError, match="JSON object"):
+        _claude._launch_claude(tmp_path, "skore-agent")
+
+
+def test_launch_claude_rejects_non_object_env(tmp_path):
+    settings = tmp_path / ".claude"
+    settings.mkdir()
+    (settings / "settings.local.json").write_text(json.dumps({"env": []}))
+
+    with pytest.raises(RuntimeError, match="env is not a JSON object"):
+        _claude._launch_claude(tmp_path, "skore-agent")
+
+
+def test_claude_ui_unavailable_message(monkeypatch):
+    monkeypatch.setattr(_process.sys, "platform", "linux")
+    assert _claude.claude_ui_unavailable() == "Claude UI is only supported on macOS."
+
+    monkeypatch.setattr(_process.sys, "platform", "darwin")
+    assert (
+        _claude.claude_ui_unavailable() == "Claude UI is not installed or not on PATH."
+    )
+
+
 def test_launch_rejects_an_incomplete_skore_file(tmp_path, monkeypatch):
     _prepare_claude_launch(tmp_path, monkeypatch)
     (tmp_path / ".skore").write_text(json.dumps({"hub_url": "http://hub.test"}))
@@ -1375,6 +1403,20 @@ def test_launch_copilot_errors_when_project_config_missing(tmp_path, monkeypatch
         lambda cmd: "/usr/bin/code" if cmd == "code" else None,
     )
     with pytest.raises(RuntimeError, match="missing .vscode/chatLanguageModels.json"):
+        _copilot._launch_copilot(tmp_path, "skore-agent")
+
+
+def test_launch_copilot_errors_when_provider_missing(tmp_path, monkeypatch):
+    config_path = tmp_path / ".vscode" / "chatLanguageModels.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(json.dumps([{"name": "Other"}]))
+    monkeypatch.setattr(
+        _process.shutil,
+        "which",
+        lambda cmd: "/usr/bin/code" if cmd == "code" else None,
+    )
+
+    with pytest.raises(RuntimeError, match="has no Skore Agent provider"):
         _copilot._launch_copilot(tmp_path, "skore-agent")
 
 

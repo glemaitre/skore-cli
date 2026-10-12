@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
+from skore_cli.skills import _release as skills_release
+from skore_cli.skills._release import open_release
 from skore_cli.skills._store import (
     SkillStoreError,
     install_skill,
@@ -54,3 +58,83 @@ def test_install_skill_keeps_existing_directory_when_copy_fails(tmp_path):
         )
 
     assert (destination / "SKILL.md").read_text() == "old"
+
+
+def test_install_skill_replaces_leftovers_and_restores_on_rename_failure(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "release"
+    source = root / "skills" / "alpha"
+    source.mkdir(parents=True)
+    (source / "SKILL.md").write_text("new")
+    target = tmp_path / "skills"
+    destination = target / "alpha"
+    destination.mkdir(parents=True)
+    (destination / "SKILL.md").write_text("old")
+    (target / ".alpha.skore-tmp").mkdir()
+    (target / ".alpha.skore-bak").mkdir()
+    original_rename = Path.rename
+
+    def rename(self, dst):
+        if self.name.endswith(".skore-tmp"):
+            raise OSError("rename failed")
+        return original_rename(self, dst)
+
+    monkeypatch.setattr(Path, "rename", rename)
+
+    with pytest.raises(OSError, match="rename failed"):
+        install_skill(
+            {"id": "alpha", "path": "skills/alpha", "hash": "h"},
+            root,
+            target,
+            "v1",
+            "owner/name",
+        )
+
+    assert (destination / "SKILL.md").read_text() == "old"
+
+
+def test_install_skill_propagates_rename_failure_for_a_new_skill(tmp_path, monkeypatch):
+    root = tmp_path / "release"
+    source = root / "skills" / "alpha"
+    source.mkdir(parents=True)
+    (source / "SKILL.md").write_text("new")
+    target = tmp_path / "skills"
+    target.mkdir()
+    original_rename = Path.rename
+
+    def rename(self, dst):
+        if self.name.endswith(".skore-tmp"):
+            raise OSError("rename failed")
+        return original_rename(self, dst)
+
+    monkeypatch.setattr(Path, "rename", rename)
+
+    with pytest.raises(OSError, match="rename failed"):
+        install_skill(
+            {"id": "alpha", "path": "skills/alpha", "hash": "h"},
+            root,
+            target,
+            "v1",
+            "owner/name",
+        )
+
+    assert not (target / "alpha").exists()
+
+
+def test_open_release_removes_the_extraction_directory(tmp_path, monkeypatch):
+    root = tmp_path / "extract" / "repo"
+    root.mkdir(parents=True)
+
+    monkeypatch.setattr(
+        skills_release,
+        "load_release",
+        lambda repo: ("v1", root, {"skills": []}),
+    )
+
+    with open_release("owner/name") as (tag, yielded, catalog):
+        assert tag == "v1"
+        assert yielded == root
+        assert catalog == {"skills": []}
+
+    assert not root.exists()

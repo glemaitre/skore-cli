@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from skore_cli._credentials import HubError, mint_api_key
+from skore_cli._credentials import HubError, mint_api_key, require_workspace_api_key
 
 
 def test_mint_api_key_reports_an_existing_key(monkeypatch):
@@ -49,4 +49,27 @@ def test_mint_api_key_reports_permission_errors(monkeypatch):
             expires="never",
             timeout=1,
             force=False,
+        )
+
+
+def test_require_workspace_api_key_errors_when_mint_is_not_stored(monkeypatch):
+    stored = {"key": None}
+
+    def generate(**kwargs):
+        stored["key"] = None
+
+    monkeypatch.setattr(
+        "skore_cli._credentials._hub_key",
+        lambda: SimpleNamespace(
+            KeyExistsError=type("KeyExistsError", (Exception,), {}),
+            generate=generate,
+            get=lambda **kwargs: stored["key"],
+        ),
+    )
+
+    with pytest.raises(HubError, match="could not read an API key"):
+        require_workspace_api_key(
+            host="http://hub.test",
+            workspace="ws-1",
+            login_timeout=1,
         )

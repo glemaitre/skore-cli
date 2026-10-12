@@ -16,6 +16,7 @@ from skore._plugins.hub.authentication.registry import distant
 from skore._plugins.hub.authentication.registry.distant import Workspace
 
 from skore_cli._agents import AGENTS, DEFAULT_MODEL_ID, HARNESS_NAMES
+from skore_cli._credentials import HubError
 from skore_cli._project import (
     SKORE_FILENAME,
     SkoreConfig,
@@ -143,6 +144,12 @@ def test_skore_config_load_rejects_missing_required_field(tmp_path):
         SkoreConfig.load(tmp_path)
 
 
+def test_skore_config_load_rejects_non_object(tmp_path):
+    (tmp_path / SKORE_FILENAME).write_text("[]\n")
+    with pytest.raises(SkoreConfigError, match="JSON object"):
+        SkoreConfig.load(tmp_path)
+
+
 def test_skore_config_load_rejects_non_integer_workspace_id(tmp_path):
     (tmp_path / SKORE_FILENAME).write_text(
         json.dumps(
@@ -244,6 +251,66 @@ def test_agent_invalid_harness_lists_all_supported_harnesses(tmp_path):
     output = _plain_output(result.output)
     for name in HARNESS_NAMES:
         assert name in output
+
+
+def test_agent_reports_hub_errors(tmp_path, monkeypatch):
+    _write_skore(tmp_path)
+
+    def boom(**kwargs):
+        raise HubError("mint failed")
+
+    monkeypatch.setattr(_commands, "require_workspace_api_key", boom)
+
+    result = CliRunner().invoke(
+        agent, ["--workspace", str(tmp_path), "--harness", "opencode"]
+    )
+
+    assert result.exit_code != 0
+    assert "mint failed" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_agent_reports_configure_errors(tmp_path, monkeypatch):
+    _write_skore(tmp_path, harness="opencode")
+
+    def boom(ctx):
+        raise RuntimeError("configure broke")
+
+    monkeypatch.setattr(
+        _commands,
+        "get_harness",
+        lambda name: SimpleNamespace(
+            harness_name=name,
+            harness_display_name="OpenCode",
+            configure=boom,
+        ),
+    )
+
+    result = CliRunner().invoke(
+        agent, ["--workspace", str(tmp_path), "--harness", "opencode"]
+    )
+
+    assert result.exit_code != 0
+    assert "configure broke" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_agent_reports_launch_errors(tmp_path, monkeypatch):
+    _write_skore(tmp_path, harness="opencode")
+    _mock_harness_on_path(monkeypatch, "opencode")
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("launch broke")
+
+    monkeypatch.setattr(_commands, "launch_harness", boom)
+
+    result = CliRunner().invoke(
+        agent, ["--workspace", str(tmp_path), "--harness", "opencode"]
+    )
+
+    assert result.exit_code != 0
+    assert "launch broke" in result.output
+    assert "Traceback" not in result.output
 
 
 def test_agent_uses_existing_skore_config(tmp_path, monkeypatch):

@@ -221,6 +221,63 @@ def test_render_catalog_interactive(monkeypatch):
     assert [table.title for table in rendered] == ["Workflows (recommended)", "Skills"]
 
 
+def test_render_catalog_filters_by_id_and_query(monkeypatch):
+    catalog = {
+        "workflows": [{"id": "flow", "summary": "A workflow", "title": "Flow"}],
+        "skills": [
+            {
+                "id": "alpha",
+                "title": "Alpha",
+                "summary": "First skill",
+                "category": "tooling",
+            },
+            {
+                "id": "beta",
+                "title": "Beta",
+                "summary": "Second skill",
+                "category": "reporting",
+            },
+        ],
+    }
+    rendered = []
+    monkeypatch.setattr(_render, "is_non_interactive", lambda: False)
+    monkeypatch.setattr(_render.console, "print", rendered.append)
+
+    _render.render_catalog(catalog, ids=["alpha"])
+    assert list(rendered[-1].columns[0].cells) == ["alpha"]
+
+    rendered.clear()
+    _render.render_catalog(catalog, query="reporting")
+    assert list(rendered[-1].columns[0].cells) == ["beta"]
+
+    rendered.clear()
+    _render.render_catalog(catalog, query="missing")
+    assert rendered == ["No skill or workflow matches the query."]
+
+
+def test_render_catalog_plain_text(monkeypatch):
+    rendered = []
+    monkeypatch.setattr(_render, "is_non_interactive", lambda: True)
+    monkeypatch.setattr(_render.console, "print", rendered.append)
+    catalog = {
+        "workflows": [{"id": "flow", "summary": "A workflow"}],
+        "skills": [{"id": "alpha", "summary": "A skill"}],
+    }
+
+    _render.render_catalog(catalog)
+    assert rendered[0] == "Workflows:"
+    assert any(line == "Skills:" for line in rendered)
+
+    rendered.clear()
+    _render.render_catalog({"skills": catalog["skills"]})
+    assert rendered[0] == "Skills:"
+    assert "" not in rendered
+
+    rendered.clear()
+    _render.render_catalog({"workflows": [], "skills": []})
+    assert rendered == ["No skill or workflow matches the query."]
+
+
 def test_interactive_install_cleans_up_when_dismissed(monkeypatch, tmp_path):
     extracted = tmp_path / "extract" / "repo"
     extracted.mkdir(parents=True)
@@ -620,6 +677,17 @@ async def test_wizard_app_loads_custom_repo(release):
     assert app.tag == "9.0.0"
 
 
+def test_list_reports_unreadable_sidecar(workspace):
+    skill = workspace.project / ".agents" / "skills" / "alpha"
+    skill.mkdir(parents=True)
+    (skill / SIDECAR).write_text("[]\n")
+
+    result = _invoke(["skills", "list"])
+
+    assert result.exit_code != 0
+    assert "object with an id" in result.output
+
+
 def test_list_installed(release, workspace):
     _invoke(["skills", "install", "alpha"])
     result = _invoke(["skills", "list"])
@@ -817,9 +885,11 @@ async def test_auto_radio_set_selects_on_arrow(release):
         assert radio.pressed_index == 0
         await pilot.press("down")
         await pilot.pause()
+        await pilot.press("up")
+        await pilot.pause()
         pressed_index = radio.pressed_index
 
-    assert pressed_index == 1
+    assert pressed_index == 0
 
 
 def test_update_interactive_selection(release, workspace, monkeypatch):
