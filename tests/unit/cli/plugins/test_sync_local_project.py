@@ -12,9 +12,6 @@ from click.testing import CliRunner
 from skore_cli.sync._commands import sync
 
 
-@pytest.mark.filterwarnings(
-    "ignore:Setting the shape on a NumPy array has been deprecated:DeprecationWarning"
-)
 def test_sync_transfers_between_real_local_projects(tmp_path):
     pytest.importorskip("sklearn")
     pytest.importorskip("skore")

@@ -19,6 +19,7 @@ from skore_cli._agents import AGENTS, DEFAULT_MODEL_ID, HARNESS_NAMES
 from skore_cli._project import (
     SKORE_FILENAME,
     SkoreConfig,
+    SkoreConfigError,
     ensure_gitignore_entry,
 )
 from skore_cli.agent import _commands
@@ -117,9 +118,10 @@ def test_skore_config_load_does_not_set_hub_uri_env(tmp_path, monkeypatch):
     assert "SKORE_HUB_URI" not in os.environ
 
 
-def test_skore_config_load_invalid_returns_none(tmp_path):
+def test_skore_config_load_invalid_raises(tmp_path):
     (tmp_path / SKORE_FILENAME).write_text("{ not json")
-    assert SkoreConfig.load(tmp_path) is None
+    with pytest.raises(SkoreConfigError, match="could not parse"):
+        SkoreConfig.load(tmp_path)
 
 
 def test_skore_config_load_normalizes_legacy_claude_code_harness(tmp_path):
@@ -133,11 +135,36 @@ def test_skore_config_load_returns_none_when_absent(tmp_path):
     assert SkoreConfig.load(tmp_path) is None
 
 
-def test_skore_config_load_returns_none_when_required_field_missing(tmp_path):
+def test_skore_config_load_rejects_missing_required_field(tmp_path):
     (tmp_path / SKORE_FILENAME).write_text(
         json.dumps({"hub_url": "http://hub.test"}) + "\n"
     )
-    assert SkoreConfig.load(tmp_path) is None
+    with pytest.raises(SkoreConfigError, match="missing hub_url"):
+        SkoreConfig.load(tmp_path)
+
+
+def test_skore_config_load_rejects_non_integer_workspace_id(tmp_path):
+    (tmp_path / SKORE_FILENAME).write_text(
+        json.dumps(
+            {"hub_url": "http://hub.test", "workspace": "ws-1", "workspace_id": "nope"}
+        )
+    )
+    with pytest.raises(SkoreConfigError, match="not an integer"):
+        SkoreConfig.load(tmp_path)
+
+
+def test_agent_refuses_unreadable_skore_without_replacing_it(tmp_path, monkeypatch):
+    original = "{ not json"
+    (tmp_path / SKORE_FILENAME).write_text(original)
+    monkeypatch.setattr(
+        hub_login, "login", lambda **kwargs: (_ for _ in ()).throw(AssertionError)
+    )
+
+    result = CliRunner().invoke(agent, ["--workspace", str(tmp_path)])
+
+    assert result.exit_code != 0
+    assert "could not parse" in result.output
+    assert (tmp_path / SKORE_FILENAME).read_text() == original
 
 
 def test_skore_config_save_omits_the_api_key(tmp_path):

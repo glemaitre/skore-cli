@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from skore_cli.harnesses import _bob, _claude, _cursor, _process
+from skore_cli.harnesses import _process
 from skore_cli.harnesses._bob import (
     _configure_bob_ide,
     _configure_bob_shell,
     _launch_bob_ide,
     _launch_bob_shell,
+    bob_ide_installed,
 )
 from skore_cli.harnesses._claude import (
     IDE_PLUGIN_LABELS,
@@ -20,6 +22,10 @@ from skore_cli.harnesses._claude import (
     _launch_claude_plugin,
     _launch_claude_ui,
     claude_plugin_ide,
+    claude_plugin_installed,
+    claude_plugin_unavailable,
+    claude_ui_installed,
+    claude_ui_unavailable,
 )
 from skore_cli.harnesses._codex import (
     _configure_codex,
@@ -43,6 +49,7 @@ from skore_cli.harnesses._cursor import (
     _configure_cursor,
     _launch_cursor,
     _launch_cursor_cli,
+    cursor_cli_installed,
 )
 from skore_cli.harnesses._opencode import (
     _configure_opencode,
@@ -68,6 +75,8 @@ class Agent:
     harness_aliases: tuple[str, ...] = ()
     configure: Configure | None = None
     launch: Launch | None = None
+    installed: Callable[[], bool] | None = None
+    unavailable: Callable[[], str] | None = None
 
     @property
     def harness_display_name(self) -> str:
@@ -77,10 +86,8 @@ class Agent:
 
 def missing_harness_message(agent: Agent) -> str:
     """Return why ``agent`` cannot be launched on this machine."""
-    if agent.harness_name == "claude-plugin":
-        return _claude._claude_plugin_missing_message()
-    if agent.harness_name == "claude-ui" and _process.sys.platform != "darwin":
-        return "Claude UI is only supported on macOS."
+    if agent.unavailable is not None:
+        return agent.unavailable()
     return f"{agent.harness_display_name} is not installed or not on PATH."
 
 
@@ -111,6 +118,8 @@ AGENTS: dict[str, Agent] = {
         harness_label="Claude UI",
         configure=_configure_claude,
         launch=_launch_claude_ui,
+        installed=claude_ui_installed,
+        unavailable=claude_ui_unavailable,
     ),
     "claude-plugin": Agent(
         name="claude-plugin",
@@ -119,6 +128,8 @@ AGENTS: dict[str, Agent] = {
         harness_label="Claude Plugin",
         configure=_configure_claude,
         launch=_launch_claude_plugin,
+        installed=claude_plugin_installed,
+        unavailable=claude_plugin_unavailable,
     ),
     "cursor": Agent(
         name="cursor",
@@ -141,6 +152,7 @@ AGENTS: dict[str, Agent] = {
         harness_label="Cursor CLI",
         configure=_configure_cursor,
         launch=_launch_cursor_cli,
+        installed=cursor_cli_installed,
     ),
     "codex": Agent(
         name="codex",
@@ -246,6 +258,7 @@ AGENTS: dict[str, Agent] = {
         harness_aliases=("bobide",),
         configure=_configure_bob_ide,
         launch=_launch_bob_ide,
+        installed=bob_ide_installed,
     ),
 }
 
@@ -379,14 +392,8 @@ def normalize_harness_name(name: str | None) -> str | None:
 
 def is_harness_installed(agent: Agent) -> bool:
     """Return whether the harness is on PATH or, on macOS, its app bundle."""
-    if agent.harness_name == "bob-ide" and _process.sys.platform == "darwin":
-        return _bob.BOB_IDE_APP_PATH.is_dir()
-    if agent.harness_name == "claude-ui":
-        return _process.sys.platform == "darwin" and _claude.CLAUDE_UI_APP_PATH.is_dir()
-    if agent.harness_name == "claude-plugin":
-        return bool(_claude._installed_claude_plugin_hosts())
-    if agent.harness_name == "cursor-cli":
-        return _cursor._resolve_cursor_cli_binary() is not None
+    if agent.installed is not None:
+        return agent.installed()
     binaries = agent.harness_binaries or (
         (agent.harness_name,) if agent.harness_name else ()
     )
@@ -416,10 +423,13 @@ def launch_harness(
     console.print(
         f"[skore.ok]Launching[/] [skore.skill]{agent.harness_display_name}[/] ..."
     )
-    from skore_cli._project import SkoreConfig
+    from skore_cli._project import SkoreConfig, SkoreConfigError
 
     if URI_ENV not in os.environ:
-        config = SkoreConfig.load(workspace)
+        try:
+            config = SkoreConfig.load(workspace)
+        except SkoreConfigError as error:
+            raise RuntimeError(str(error)) from error
         if config is not None:
             apply_hub_uri(config.hub_url)
     agent.launch(workspace, model_id)

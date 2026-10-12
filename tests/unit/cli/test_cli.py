@@ -220,12 +220,15 @@ def test_discover_api_url_returns_none_on_404(monkeypatch):
     import io
     from urllib.error import HTTPError
 
+    body = io.BytesIO()
+
     def fake_urlopen(url, *, timeout):
-        raise HTTPError(url, 404, "Not Found", {}, io.BytesIO())
+        raise HTTPError(url, 404, "Not Found", {}, body)
 
     monkeypatch.setattr(_skore.urllib.request, "urlopen", fake_urlopen)
 
     assert _skore._discover_api_url("https://frontend.test") is None
+    assert body.closed
 
 
 def test_discover_api_url_returns_none_on_non_200(monkeypatch):

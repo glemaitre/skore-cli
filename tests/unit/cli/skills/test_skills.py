@@ -8,6 +8,7 @@ from skore_cli import cli
 from skore_cli.app._help import HelpInput, HelpScreen
 from skore_cli.skills import _commands as _skills
 from skore_cli.skills import _release as skills_release
+from skore_cli.skills import _render
 from skore_cli.skills._catalog import GITHUB_REPO, fetch_release
 from skore_cli.skills._commands import (
     ProbablSkillsInstaller,
@@ -212,12 +213,36 @@ def test_render_catalog_interactive(monkeypatch):
         "skills": [{"id": "alpha", "summary": "A skill"}],
     }
 
-    monkeypatch.setattr(_skills, "is_non_interactive", lambda: False)
-    monkeypatch.setattr(_skills.console, "print", rendered.append)
+    monkeypatch.setattr(_render, "is_non_interactive", lambda: False)
+    monkeypatch.setattr(_render.console, "print", rendered.append)
 
-    _skills._render_catalog(catalog)
+    _render.render_catalog(catalog)
 
     assert [table.title for table in rendered] == ["Workflows (recommended)", "Skills"]
+
+
+def test_interactive_install_cleans_up_when_dismissed(monkeypatch, tmp_path):
+    extracted = tmp_path / "extract" / "repo"
+    extracted.mkdir(parents=True)
+
+    class _Dismissed:
+        result = None
+
+        def __init__(self, **kwargs):
+            self.root = extracted
+
+        def run(self):
+            return None
+
+    monkeypatch.setattr(_skills, "ProbablSkillsInstaller", _Dismissed)
+
+    assert (
+        _skills._interactive_install_options(
+            agent=(), default_global=False, default_repo="owner/name"
+        )
+        is None
+    )
+    assert not extracted.exists()
 
 
 def test_install_global_without_selection_errors(release, workspace):
@@ -1162,7 +1187,7 @@ def test_installed_ignores_unmanaged_entries(release, workspace):
     skills_dir = workspace.project / ".agents" / "skills"
     (skills_dir / "handwritten").mkdir()
 
-    assert [sidecar["id"] for _, sidecar in _skills._installed(skills_dir)] == ["alpha"]
+    assert [sidecar["id"] for _, sidecar in _skills.installed(skills_dir)] == ["alpha"]
 
 
 # --------------------------------------------------------------------------- #
@@ -1239,7 +1264,8 @@ def test_update_skips_skill_absent_from_catalog(release, workspace):
     result = _invoke(["skills", "update", "--all"])
 
     assert result.exit_code == 0
-    assert "up to date" in result.output
+    assert "not in the latest release" in result.output
+    assert "up to date" not in result.output
     assert (workspace.project / ".agents" / "skills" / "alpha" / "SKILL.md").is_file()
 
 

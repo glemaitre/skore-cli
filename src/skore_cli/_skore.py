@@ -20,7 +20,10 @@ def _discover_api_url(url: str) -> str | None:
                 api_url = json.loads(response.read().decode()).get("api_url")
                 if api_url:
                     return api_url
-    except (HTTPError, URLError, OSError, ValueError):
+    except HTTPError as error:
+        # ``urlopen`` raises before the ``with`` block owns the response.
+        error.close()
+    except (URLError, OSError, ValueError):
         pass
     return None
 

@@ -1115,13 +1115,21 @@ def test_launch_exports_nothing_without_a_skore_file(tmp_path, monkeypatch):
     assert "SKORE_HUB_URI" not in captured["env"]
 
 
-def test_launch_exports_nothing_from_an_incomplete_skore_file(tmp_path, monkeypatch):
-    captured = _prepare_claude_launch(tmp_path, monkeypatch)
+def test_launch_claude_rejects_invalid_settings(tmp_path):
+    settings = tmp_path / ".claude"
+    settings.mkdir()
+    (settings / "settings.local.json").write_text("{")
+
+    with pytest.raises(RuntimeError, match="not valid JSON"):
+        _claude._launch_claude(tmp_path, "skore-agent")
+
+
+def test_launch_rejects_an_incomplete_skore_file(tmp_path, monkeypatch):
+    _prepare_claude_launch(tmp_path, monkeypatch)
     (tmp_path / ".skore").write_text(json.dumps({"hub_url": "http://hub.test"}))
 
-    _agents.launch_harness(AGENTS["claude-code"], tmp_path)
-
-    assert "SKORE_HUB_URI" not in captured["env"]
+    with pytest.raises(RuntimeError, match="missing hub_url"):
+        _agents.launch_harness(AGENTS["claude-code"], tmp_path)
 
 
 def test_launch_harness_errors_when_not_detected(tmp_path, monkeypatch):

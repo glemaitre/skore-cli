@@ -117,6 +117,12 @@ def sync(
         raise click.UsageError("--hub-url requires a Hub endpoint.")
 
     from skore import Project
+    from skore._exceptions import (
+        InvalidProjectNameError,
+        ProjectCreationError,
+        ProjectLoadError,
+        ProjectPermissionError,
+    )
 
     try:
         if uses_hub and hub_url:
@@ -130,7 +136,15 @@ def sync(
         result = source.sync(destination, bidirectional=both, dry_run=dry_run)
     except click.ClickException:
         raise
-    except Exception as error:
+    except (
+        InvalidProjectNameError,
+        ProjectCreationError,
+        ProjectLoadError,
+        ProjectPermissionError,
+        OSError,
+        ValueError,
+        RuntimeError,
+    ) as error:
         raise click.ClickException(str(error)) from error
 
     _render_result(result, dry_run=dry_run)

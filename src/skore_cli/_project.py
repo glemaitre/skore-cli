@@ -9,6 +9,10 @@ from pathlib import Path
 SKORE_FILENAME = ".skore"
 
 
+class SkoreConfigError(ValueError):
+    """A ``.skore`` file is present but cannot be loaded."""
+
+
 @dataclass
 class SkoreConfig:
     """Persisted Skore agent settings for a project."""
@@ -30,20 +34,30 @@ class SkoreConfig:
             return None
         try:
             data = json.loads(file_path.read_text() or "{}")
-        except json.JSONDecodeError:
-            return None
+        except json.JSONDecodeError as error:
+            raise SkoreConfigError(f"could not parse {file_path}: {error}") from error
+        if not isinstance(data, dict):
+            raise SkoreConfigError(f"{file_path} does not hold a JSON object.")
         hub_url = data.get("hub_url")
         workspace = data.get("workspace")
         workspace_id = data.get("workspace_id")
         if not hub_url or not workspace or workspace_id is None:
-            return None
+            raise SkoreConfigError(
+                f"{file_path} is missing hub_url, workspace, or workspace_id."
+            )
+        try:
+            parsed_id = int(workspace_id)
+        except (TypeError, ValueError) as error:
+            raise SkoreConfigError(
+                f"{file_path} workspace_id is not an integer."
+            ) from error
         from skore_cli._agents import normalize_harness_name
 
         harness = normalize_harness_name(data.get("harness"))
         return cls(
             hub_url=hub_url,
             workspace=workspace,
-            workspace_id=int(workspace_id),
+            workspace_id=parsed_id,
             harness=harness,
         )
 

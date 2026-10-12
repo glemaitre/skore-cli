@@ -116,7 +116,27 @@ addopts = [
 xfail_strict = true
 asyncio_mode = "auto"
 log_cli_level = "info"
-filterwarnings = ["error"]
+filterwarnings = [
+  "error",
+  # Editable/local packages trigger warnings when the hub snapshots the environment.
+  "ignore:Package .* seems to be an editable or local install:UserWarning:skore._plugins.hub.artifact.environment",
+  # mlflow on Python 3.11
+  "ignore:SelectableGroups dict interface is deprecated. Use select.:DeprecationWarning",
+  # mlflow writes files through codecs.open(), deprecated in Python 3.14.
+  'ignore:codecs\\.open\\(\\) is deprecated:DeprecationWarning:mlflow',
+  'ignore:Starting with pandas version 4\\.0 all arguments of all will be keyword-only::mlflow',
+  # sklearn still passes deprecated L-BFGS-B options through to scipy.
+  'ignore:.*`disp` and `iprint` options of the L-BFGS-B solver are deprecated:DeprecationWarning',
+  'ignore:Unknown solver options:scipy.optimize._optimize.OptimizeWarning',
+  'ignore:The .generic. unit for NumPy timedelta is deprecated:DeprecationWarning:skrub',
+  'ignore:vert.*was deprecated in Matplotlib:matplotlib._api.deprecation.MatplotlibDeprecationWarning:seaborn',
+  'ignore:Support for the dataframe interchange protocol is deprecated:DeprecationWarning:(sklearn|plotly)',
+  # NumPy 2.5, reached by sklearn evaluate during the real local sync test.
+  "ignore:Setting the shape on a NumPy array has been deprecated:DeprecationWarning",
+  # Temporary-file finalizers can fire at arbitrary GC points.
+  'ignore:Implicitly cleaning up:ResourceWarning',
+  'ignore::pytest.PytestUnraisableExceptionWarning',
+]
 
 [tool.coverage.run]
 branch = true

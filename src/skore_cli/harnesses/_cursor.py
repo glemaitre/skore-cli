@@ -110,6 +110,11 @@ def _configure_cursor(ctx: HarnessContext) -> dict[str, Any]:
     return {"config_path": str(config_path)}
 
 
+def cursor_cli_installed() -> bool:
+    """Return whether a Cursor CLI binary is on ``PATH``."""
+    return _resolve_cursor_cli_binary() is not None
+
+
 def _resolve_cursor_cli_binary() -> str | None:
     """Return ``cursor-agent``, or ``agent`` only when the path looks like Cursor."""
     if _process.shutil.which("cursor-agent") is not None:

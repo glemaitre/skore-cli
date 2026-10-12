@@ -25,6 +25,7 @@ from skore_cli._runtime import is_non_interactive
 from skore_cli._style import console
 from skore_cli.skills._catalog import GITHUB_REPO
 from skore_cli.skills._release import ReleaseError, cleanup_release, load_release
+from skore_cli.skills._render import render_catalog
 from skore_cli.skills._store import (
     SIDECAR,
     SkillStoreError,
@@ -197,80 +198,6 @@ def _interactive_manage_picker(
     return app.result
 
 
-def _matches(entry: dict, query: str) -> bool:
-    fields = (
-        entry.get("id"),
-        entry.get("title"),
-        entry.get("summary"),
-        entry.get("category"),
-    )
-    return any(field and query in field.lower() for field in fields)
-
-
-def _render_catalog(
-    catalog: dict[str, Any],
-    *,
-    query: str | None = None,
-    ids: list[str] | None = None,
-) -> None:
-    workflows = catalog.get("workflows", [])
-    skills = catalog.get("skills", [])
-
-    if ids is not None:
-        wanted = set(ids)
-        workflows = [entry for entry in workflows if entry["id"] in wanted]
-        skills = [entry for entry in skills if entry["id"] in wanted]
-    elif query:
-        needle = query.lower()
-        workflows = [entry for entry in workflows if _matches(entry, needle)]
-        skills = [entry for entry in skills if _matches(entry, needle)]
-
-    if is_non_interactive():
-        _render_catalog_plain(workflows, skills)
-        return
-
-    if workflows:
-        table = Table(title="Workflows (recommended)")
-        table.add_column("id", style="skore.skill")
-        table.add_column("summary")
-        for workflow in workflows:
-            table.add_row(workflow["id"], workflow.get("summary", ""))
-        console.print(table)
-
-    if skills:
-        table = Table(title="Skills")
-        table.add_column("id", style="skore.skill")
-        table.add_column("summary")
-        for skill in skills:
-            table.add_row(skill["id"], skill.get("summary", ""))
-        console.print(table)
-
-    if not workflows and not skills:
-        console.print("No skill or workflow matches the query.")
-
-
-def _render_catalog_plain(
-    workflows: list[dict[str, Any]], skills: list[dict[str, Any]]
-) -> None:
-    """Render the catalog as plain text (no boxes) for non-interactive use."""
-    if workflows:
-        console.print("Workflows:")
-        for wf in workflows:
-            summary = wf.get("summary", "")
-            console.print(f"  {wf['id']:<26} {summary}")
-
-    if skills:
-        if workflows:
-            console.print("")
-        console.print("Skills:")
-        for skill in skills:
-            summary = skill.get("summary", "")
-            console.print(f"  {skill['id']:<26} {summary}")
-
-    if not workflows and not skills:
-        console.print("No skill or workflow matches the query.")
-
-
 def _resolve_agent_names(agent: tuple[str, ...]) -> list[str]:
     if agent:
         return list(agent)
@@ -311,6 +238,7 @@ def _interactive_install_options(
     app.run()
 
     if app.result is None:
+        cleanup_release(app.root)
         return None
 
     selected_ids, agent_names, global_, repo = app.result
@@ -366,8 +294,8 @@ def _copy_selected_skills(
         for _, target in targets:
             for skill in selected:
                 install_skill(skill, root, target, tag, repo)
+                persist_source_catalog(target, repo, tag, catalog)
                 progress.advance(task)
-            persist_source_catalog(target, repo, tag, catalog)
 
     return len(targets)
 
@@ -423,7 +351,7 @@ def install(ids, agent, global_, repo, all_) -> None:
     if interactive:
         if is_non_interactive():
             with _release(repo) as (_tag, _root, catalog):
-                _render_catalog(catalog)
+                render_catalog(catalog)
                 console.print(
                     "Run [skore.cmd]skore skills install <ids>[/] to install "
                     "specific skills, or [skore.cmd]skore skills install all[/] "
@@ -560,6 +488,7 @@ def update(ids, agent, global_, all_) -> None:
             selected_items.append((target, sidecar))
 
     updated: list[tuple[str, str, Path]] = []
+    missing: list[str] = []
     considered_repos = sorted(
         {skill_repository(sidecar) for _, sidecar in selected_items}
     )
@@ -571,28 +500,32 @@ def update(ids, agent, global_, all_) -> None:
                     continue
                 skill = skills_by_id.get(sidecar["id"])
                 if skill is None:
+                    missing.append(sidecar["id"])
                     continue
                 if sidecar.get("hash") != skill["hash"]:
                     install_skill(skill, root, target, tag, repo)
                     updated.append((sidecar["id"], repo, target))
                 else:
                     write_sidecar(target / sidecar["id"], skill, tag, repo)
-            for target in {
-                t for t, sidecar in selected_items if skill_repository(sidecar) == repo
-            }:
                 persist_source_catalog(target, repo, tag, catalog)
 
+    if missing:
+        skipped = ", ".join(sorted(set(missing)))
+        console.print(
+            f"[skore.warn]![/] skipped [skore.skill]{skipped}[/]: "
+            "not in the latest release."
+        )
     if updated:
         for skill_id, repo, target in updated:
             console.print(
                 f"[skore.ok]^[/] updated [skore.skill]{skill_id}[/] "
                 f"({repo}) -> [skore.path]{target}[/]"
             )
-    elif considered_repos:
+    elif not missing and considered_repos:
         console.print(
             f"All skills are up to date ({_format_sources(considered_repos)})."
         )
-    else:
+    elif not missing:
         console.print("All skills are up to date.")
 
 

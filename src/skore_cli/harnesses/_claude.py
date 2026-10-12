@@ -41,12 +41,35 @@ def _configure_claude(ctx: HarnessContext) -> dict[str, Any]:
     return {"config_path": str(config_path)}
 
 
+def _read_claude_settings(path: Path) -> dict[str, Any]:
+    """Return Claude's settings object, or raise ``RuntimeError`` when unreadable."""
+    try:
+        data = json.loads(path.read_text() or "{}")
+    except json.JSONDecodeError as error:
+        raise RuntimeError(
+            f"{path} is not valid JSON (comments are not supported here); "
+            "fix or move it, then run `skore agent` again."
+        ) from error
+    if not isinstance(data, dict):
+        raise RuntimeError(
+            f"{path} does not hold a JSON object; fix or move it, then run "
+            "`skore agent` again."
+        )
+    return data
+
+
 def _launch_claude(workspace: Path, _model_id: str) -> None:
     env = _process.os.environ.copy()
     settings_path = workspace / ".claude" / "settings.local.json"
     if settings_path.is_file():
-        settings = json.loads(settings_path.read_text() or "{}")
-        env.update(settings.get("env", {}))
+        settings = _read_claude_settings(settings_path)
+        exported = settings.get("env", {})
+        if not isinstance(exported, dict):
+            raise RuntimeError(
+                f"{settings_path} env is not a JSON object; fix or move it, "
+                "then run `skore agent` again."
+            )
+        env.update(exported)
     _process._exec_harness("claude", ["claude"], env=env)
 
 
@@ -86,6 +109,28 @@ def _has_ide_extension(extensions_dir: Path, extension_id: str) -> bool:
 
 def _claude_plugin_missing_message() -> str:
     return "Claude Plugin is not installed in VS Code or Cursor."
+
+
+def claude_ui_installed() -> bool:
+    """Return whether the Claude desktop app is present."""
+    return _process.sys.platform == "darwin" and CLAUDE_UI_APP_PATH.is_dir()
+
+
+def claude_ui_unavailable() -> str:
+    """Return why Claude UI cannot be launched."""
+    if _process.sys.platform != "darwin":
+        return "Claude UI is only supported on macOS."
+    return "Claude UI is not installed or not on PATH."
+
+
+def claude_plugin_installed() -> bool:
+    """Return whether a supported IDE has the Claude plugin."""
+    return bool(_installed_claude_plugin_hosts())
+
+
+def claude_plugin_unavailable() -> str:
+    """Return why the Claude plugin harness cannot be launched."""
+    return _claude_plugin_missing_message()
 
 
 def _installed_claude_plugin_hosts() -> list[tuple[str, str]]:

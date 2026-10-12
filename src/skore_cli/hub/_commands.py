@@ -96,7 +96,7 @@ def generate(
     if expires != "never":
         unit = "month" if expires == "1" else "months"
         message = f"{message} (expires in {expires} {unit})"
-    console.print(message)
+    console.print(message, highlight=False)
 
 
 @api_key.command("revoke")

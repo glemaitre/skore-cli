@@ -15,6 +15,16 @@ from skore_cli.harnesses._cursor import _load_json_object
 BOB_IDE_APP_PATH = Path("/Applications/IBM Bob.app")
 
 
+def bob_ide_installed() -> bool:
+    """Return whether Bob IDE is installed.
+
+    On macOS that is the app bundle. Elsewhere it is the ``bobide`` binary.
+    """
+    if _process.sys.platform == "darwin":
+        return BOB_IDE_APP_PATH.is_dir()
+    return _process.shutil.which("bobide") is not None
+
+
 def _configure_bob(ctx: HarnessContext, transport: dict[str, str]) -> dict[str, Any]:
     """Register the hub's MCP server in ``.bob/mcp.json``.
 

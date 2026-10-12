@@ -21,7 +21,7 @@ from skore_cli._agents import (
     normalize_harness_name,
 )
 from skore_cli._credentials import HubError, require_workspace_api_key
-from skore_cli._project import SkoreConfig, ensure_gitignore_entry
+from skore_cli._project import SkoreConfig, SkoreConfigError, ensure_gitignore_entry
 from skore_cli._runtime import is_non_interactive
 from skore_cli._skore import URI_ENV, apply_hub_uri, resolve_hub_uri
 from skore_cli._style import action_required, console
@@ -176,7 +176,10 @@ def agent(
     if not workspace.is_dir():
         raise click.ClickException(f"workspace does not exist: {workspace}")
 
-    config = SkoreConfig.load(workspace)
+    try:
+        config = SkoreConfig.load(workspace)
+    except SkoreConfigError as error:
+        raise click.ClickException(str(error)) from error
     saved_harness = config.harness if config is not None else None
 
     # The saved hub_url is stored already resolved, so a raw match modulo a

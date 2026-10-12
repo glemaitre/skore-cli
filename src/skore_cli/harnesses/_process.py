@@ -4,11 +4,9 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess
-import sys
-from pathlib import Path
-
-__all__ = ["Path", "_exec_harness", "os", "shutil", "subprocess", "sys"]
+import subprocess  # noqa: F401  (tests patch this module attribute)
+import sys  # noqa: F401  (tests patch this module attribute)
+from pathlib import Path  # noqa: F401  (tests patch this module attribute)
 
 
 def _exec_harness(

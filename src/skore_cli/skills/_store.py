@@ -60,7 +60,10 @@ def read_local_catalog(target: Path) -> dict[str, Any]:
     path = local_catalog_path(target)
     if path is None:
         return {"sources": {}}
-    return envelope_from_catalog_data(_load_json(path))
+    data = _load_json(path)
+    if not isinstance(data, dict):
+        raise SkillStoreError(f"could not read {path}: expected a JSON object.")
+    return envelope_from_catalog_data(data)
 
 
 def _remove_legacy_catalog(target: Path) -> None:
@@ -100,7 +103,12 @@ def installed(target: Path) -> Iterator[tuple[Path, dict[str, Any]]]:
             continue
         sidecar = child / SIDECAR
         if sidecar.is_file():
-            yield child, _load_json(sidecar)
+            payload = _load_json(sidecar)
+            if not isinstance(payload, dict) or "id" not in payload:
+                raise SkillStoreError(
+                    f"could not read {sidecar}: expected an object with an id."
+                )
+            yield child, payload
 
 
 def prune_local_catalog(target: Path) -> None:
@@ -137,9 +145,26 @@ def install_skill(skill: dict, root: Path, target: Path, tag: str, repo: str) ->
     """Copy ``skill`` from the extracted release into ``target`` and write a sidecar."""
     source = root / skill["path"]
     destination = target / skill["id"]
-
-    if destination.exists():
-        shutil.rmtree(destination)
-
-    shutil.copytree(source, destination)
-    write_sidecar(destination, skill, tag, repo)
+    staging = destination.with_name(f".{destination.name}.skore-tmp")
+    backup = destination.with_name(f".{destination.name}.skore-bak")
+    if staging.exists():
+        shutil.rmtree(staging)
+    try:
+        shutil.copytree(source, staging)
+        write_sidecar(staging, skill, tag, repo)
+    except Exception:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    if backup.exists():
+        shutil.rmtree(backup)
+    replaced = destination.exists()
+    if replaced:
+        destination.rename(backup)
+    try:
+        staging.rename(destination)
+    except Exception:
+        if replaced:
+            backup.rename(destination)
+        raise
+    if replaced:
+        shutil.rmtree(backup, ignore_errors=True)
