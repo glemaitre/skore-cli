@@ -247,6 +247,82 @@ def test_pi_config_matches_hub_ui(tmp_path):
     assert compat["sessionAffinityFormat"] == "openrouter"
 
 
+def test_claude_config_keeps_existing_settings(tmp_path):
+    settings = tmp_path / ".claude"
+    settings.mkdir()
+    (settings / "settings.local.json").write_text(
+        json.dumps(
+            {
+                "permissions": {"allow": ["Bash"]},
+                "hooks": {"Stop": []},
+                "model": "opus",
+                "env": {"OTHER_TOKEN": "kept"},
+            }
+        )
+    )
+
+    AGENTS["claude-code"].configure(_ctx(tmp_path))
+
+    config = json.loads((settings / "settings.local.json").read_text())
+    assert config["permissions"] == {"allow": ["Bash"]}
+    assert config["hooks"] == {"Stop": []}
+    assert config["model"] == "opus"
+    assert config["env"]["OTHER_TOKEN"] == "kept"
+    assert config["env"]["ANTHROPIC_AUTH_TOKEN"] == "secret-key"
+
+
+def test_opencode_config_keeps_existing_provider_and_model(tmp_path):
+    (tmp_path / "opencode.json").write_text(
+        json.dumps(
+            {
+                "model": "other/model",
+                "mcp": {"local": {}},
+                "provider": {"other": {"name": "Other"}},
+            }
+        )
+    )
+
+    AGENTS["opencode"].configure(_ctx(tmp_path))
+
+    config = json.loads((tmp_path / "opencode.json").read_text())
+    assert config["model"] == "other/model"
+    assert config["mcp"] == {"local": {}}
+    assert config["provider"]["other"] == {"name": "Other"}
+    assert config["provider"]["skore"]["name"] == "Skore Hub"
+
+
+def test_pi_config_keeps_existing_providers(tmp_path):
+    config_path = tmp_path / ".pi" / "agent" / "models.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(json.dumps({"providers": {"other": {"api": "openai"}}}))
+
+    AGENTS["pi"].configure(_ctx(tmp_path))
+
+    config = json.loads(config_path.read_text())
+    assert config["providers"]["other"] == {"api": "openai"}
+    assert config["providers"]["skore"]["apiKey"] == "secret-key"
+
+
+@pytest.mark.parametrize(
+    ("name", "relative", "payload"),
+    [
+        ("claude-code", ".claude/settings.local.json", {"env": ["not-an-object"]}),
+        ("opencode", "opencode.json", {"provider": ["not-an-object"]}),
+        ("pi", ".pi/agent/models.json", {"providers": ["not-an-object"]}),
+    ],
+)
+def test_config_refuses_a_non_object_skore_section(tmp_path, name, relative, payload):
+    path = tmp_path / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    original = json.dumps(payload)
+    path.write_text(original)
+
+    with pytest.raises(RuntimeError, match="not a JSON object"):
+        AGENTS[name].configure(_ctx(tmp_path))
+
+    assert path.read_text() == original
+
+
 def test_cursor_config_points_at_the_mcp_endpoint(tmp_path):
     AGENTS["cursor"].configure(_ctx(tmp_path))
 
